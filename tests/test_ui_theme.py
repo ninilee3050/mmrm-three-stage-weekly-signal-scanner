@@ -34,6 +34,11 @@ def test_dark_palette_has_distinct_chart_and_table_colors() -> None:
     assert dark["chart_text"] != dark["chart_background"]
     assert dark["scroll_thumb"] != dark["field"]
     assert dark["scroll_thumb_active"] != dark["scroll_thumb"]
+    assert dark["signal_first_bg"] != dark["field"]
+    assert dark["signal_second_bg"] != dark["field"]
+    assert dark["signal_third_bg"] != dark["field"]
+    assert dark["history_failure_bg"] != dark["history_success_high_bg"]
+    assert dark["history_success_low_bg"] != dark["history_success_high_bg"]
 
 
 def test_dark_palette_uses_neutral_codex_style_surfaces() -> None:
@@ -46,6 +51,22 @@ def test_dark_palette_uses_neutral_codex_style_surfaces() -> None:
     for key in ("window", "panel", "field", "button", "chart_background", "chart_panel"):
         color = dark[key]
         assert color[1:3] == color[3:5] == color[5:7]
+
+
+def test_dark_history_low_is_visually_lighter_than_medium() -> None:
+    dark = theme_palette("dark")
+
+    def perceived_luminance(color: str) -> float:
+        red, green, blue = (
+            int(color[index : index + 2], 16) for index in (1, 3, 5)
+        )
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+    low = perceived_luminance(dark["history_success_low_bg"])
+    medium = perceived_luminance(dark["history_success_medium_bg"])
+    high = perceived_luminance(dark["history_success_high_bg"])
+
+    assert medium < low < high
 
 
 def test_dark_palette_uses_soft_text_contrast_and_korean_font_first() -> None:
