@@ -3,6 +3,10 @@ from __future__ import annotations
 import pandas as pd
 
 from chart_preview import (
+    BENCHMARK_NAME,
+    BENCHMARK_SIGNAL_OPACITY,
+    BENCHMARK_SIGNAL_WIDTH,
+    BENCHMARK_TICKER,
     CANDLE_DOWN_COLOR,
     CANDLE_UP_COLOR,
     CANDLE_WIDTH_RATIO,
@@ -19,9 +23,35 @@ from chart_preview import (
     VOLUME_MA_STYLE,
     ZOOM_IN_FACTOR,
     ZOOM_OUT_FACTOR,
+    comparison_view_indices,
     cycle_view_dates,
     cycle_view_indices,
+    expanded_comparison_width,
 )
+
+
+def test_sp500_is_the_single_comparison_benchmark() -> None:
+    assert BENCHMARK_TICKER == "^GSPC"
+    assert BENCHMARK_NAME == "S&P 500"
+    assert BENCHMARK_SIGNAL_OPACITY == 0.78
+    assert BENCHMARK_SIGNAL_WIDTH == 2.2
+
+
+def test_comparison_view_uses_the_stock_visible_date_range() -> None:
+    benchmark_index = pd.date_range("2024-01-01", "2024-12-30", freq="W-MON")
+
+    start, end = comparison_view_indices(
+        benchmark_index,
+        pd.Timestamp("2024-03-06"),
+        pd.Timestamp("2024-06-14"),
+    )
+
+    assert benchmark_index[start] == pd.Timestamp("2024-03-11")
+    assert benchmark_index[end] == pd.Timestamp("2024-06-10")
+
+
+def test_comparison_expands_to_the_right_without_shrinking_primary_chart() -> None:
+    assert expanded_comparison_width(1600, 1440) == 3044
 
 
 def test_chart_colors_and_oscillator_thresholds_match_the_reference() -> None:

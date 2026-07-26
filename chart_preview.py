@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import threading
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 import numpy as np
 import pandas as pd
 
+from data_provider import load_weekly_data
+from indicators import calculate_indicators
 from ui_theme import configure_ui_fonts, normalize_theme, theme_palette
 
 
@@ -65,6 +68,10 @@ CANDLE_WIDTH_RATIO = 0.76
 INDICATOR_BAR_WIDTH_RATIO = 0.84
 ZOOM_IN_FACTOR = 0.88
 ZOOM_OUT_FACTOR = 1.14
+BENCHMARK_TICKER = "^GSPC"
+BENCHMARK_NAME = "S&P 500"
+BENCHMARK_SIGNAL_OPACITY = 0.78
+BENCHMARK_SIGNAL_WIDTH = 2.2
 
 SIGNAL_STYLES = (
     ("1차", "FirstSignalDate", "#16a34a"),
@@ -120,6 +127,27 @@ def cycle_view_indices(
     return max(0, start), min(len(dates) - 1, max(start, end))
 
 
+def comparison_view_indices(
+    index: pd.DatetimeIndex,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+) -> tuple[int, int]:
+    """Map the stock chart's visible date range onto the benchmark index."""
+    dates = _normalized_index(index)
+    if dates.empty:
+        raise ValueError("비교 지수 데이터가 비어 있습니다.")
+    start = int(dates.searchsorted(pd.Timestamp(start_date), side="left"))
+    end = int(dates.searchsorted(pd.Timestamp(end_date), side="right") - 1)
+    start = min(len(dates) - 1, max(0, start))
+    end = min(len(dates) - 1, max(start, end))
+    return start, end
+
+
+def expanded_comparison_width(window_width: int, primary_chart_width: int) -> int:
+    """Keep the primary chart width and append an equally useful right pane."""
+    return int(window_width) + max(640, int(primary_chart_width)) + 4
+
+
 class ChartPreviewWindow(tk.Toplevel):
     """Interactive weekly chart kept in one reusable Tkinter window."""
 
@@ -144,25 +172,50 @@ class ChartPreviewWindow(tk.Toplevel):
         self.hover_var = tk.StringVar(
             value="휠: 확대·축소  |  드래그: 좌우 이동  |  더블클릭: 선택 사이클 전체 보기"
         )
+        self.header_frame = ttk.Frame(self)
+        self.header_frame.pack(fill="x")
         ttk.Label(
-            self,
+            self.header_frame,
             textvariable=self.status_var,
             font=(self.ui_font_family, 11, "bold"),
-            padding=(10, 7, 10, 2),
-        ).pack(fill="x")
+            padding=(10, 7, 150, 2),
+        ).pack(side="left", fill="x", expand=True)
+        self.benchmark_button = ttk.Button(
+            self.header_frame,
+            text="S&P 500 비교 열기",
+            command=self._toggle_benchmark,
+        )
+        self.benchmark_button.place(
+            relx=1.0,
+            x=-10,
+            y=6,
+            anchor="ne",
+        )
         ttk.Label(
             self,
             textvariable=self.hover_var,
             padding=(10, 2, 10, 7),
         ).pack(fill="x")
 
+        self.chart_area = ttk.Frame(self)
+        self.chart_area.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(
-            self,
+            self.chart_area,
             background=self.palette["chart_background"],
             highlightthickness=0,
             cursor="crosshair",
         )
-        self.canvas.pack(fill="both", expand=True)
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        self.comparison_frame = ttk.Frame(self.chart_area)
+        self.comparison_status_var = tk.StringVar(value="S&P 500 데이터를 준비해 주세요.")
+        self.comparison_canvas = tk.Canvas(
+            self.comparison_frame,
+            background=self.palette["chart_background"],
+            highlightthickness=0,
+            cursor="crosshair",
+        )
+        self.comparison_canvas.pack(fill="both", expand=True)
         self.panel_title_font = tkfont.Font(
             root=self,
             family=self.ui_font_family,
@@ -183,6 +236,14 @@ class ChartPreviewWindow(tk.Toplevel):
         self.canvas.bind("<B1-Motion>", self._on_drag_motion)
         self.canvas.bind("<ButtonRelease-1>", self._on_drag_end)
         self.canvas.bind("<Double-Button-1>", self._reset_view)
+        self.comparison_canvas.bind("<Configure>", self._on_resize)
+        self.comparison_canvas.bind("<Motion>", self._on_comparison_motion)
+        self.comparison_canvas.bind("<Leave>", self._clear_crosshair)
+        self.comparison_canvas.bind("<MouseWheel>", self._on_comparison_mousewheel)
+        self.comparison_canvas.bind("<ButtonPress-1>", self._on_comparison_drag_start)
+        self.comparison_canvas.bind("<B1-Motion>", self._on_comparison_drag_motion)
+        self.comparison_canvas.bind("<ButtonRelease-1>", self._on_drag_end)
+        self.comparison_canvas.bind("<Double-Button-1>", self._reset_view)
 
         self.ticker = ""
         self.company = ""
@@ -192,14 +253,158 @@ class ChartPreviewWindow(tk.Toplevel):
         self.view_end = 0
         self.initial_view = (0, 0)
         self._redraw_job: str | None = None
-        self._drag_origin: tuple[int, int, int] | None = None
+        self._drag_origin: tuple[int, int, int, float] | None = None
+        self.benchmark_data = pd.DataFrame()
+        self.benchmark_visible = False
+        self.benchmark_loading = False
+        self._geometry_before_benchmark: str | None = None
+        self._primary_width_before_benchmark = 0
+        self._state_before_benchmark = "normal"
+        self._window_size_before_benchmark = (0, 0)
+        self._window_position_before_benchmark = (0, 0)
 
     def set_theme(self, mode: str) -> None:
         self.theme_mode = normalize_theme(mode)
         self.palette = theme_palette(self.theme_mode)
         self.configure(background=self.palette["window"])
         self.canvas.configure(background=self.palette["chart_background"])
+        self.comparison_canvas.configure(background=self.palette["chart_background"])
         self._schedule_redraw()
+
+    def _toggle_benchmark(self) -> None:
+        if self.benchmark_visible and not self.benchmark_data.empty:
+            self._hide_benchmark()
+            return
+        if not self.benchmark_visible:
+            self._show_benchmark_frame()
+        if not self.benchmark_data.empty:
+            self._schedule_redraw()
+            return
+        if self.benchmark_loading:
+            return
+
+        self.benchmark_loading = True
+        self.benchmark_button.configure(text="S&P 500 불러오는 중...", state="disabled")
+        self.comparison_status_var.set("S&P 500 주봉 데이터를 불러오는 중입니다...")
+        self._schedule_redraw()
+        threading.Thread(target=self._load_benchmark_worker, daemon=True).start()
+
+    def _show_benchmark_frame(self) -> None:
+        if self.benchmark_visible:
+            return
+        self.update_idletasks()
+        self.benchmark_visible = True
+        self._state_before_benchmark = self.state()
+        self._geometry_before_benchmark = self.geometry()
+        self._primary_width_before_benchmark = max(640, self.canvas.winfo_width())
+        self._window_size_before_benchmark = (self.winfo_width(), self.winfo_height())
+        self._window_position_before_benchmark = (self.winfo_x(), self.winfo_y())
+        self.benchmark_button.place_configure(
+            relx=0.0,
+            x=max(150, self._window_size_before_benchmark[0] - 10),
+            y=6,
+            anchor="ne",
+        )
+        if self._state_before_benchmark != "normal":
+            self.state("normal")
+            self.update_idletasks()
+        self._expand_for_benchmark()
+        self.comparison_frame.configure(width=self._primary_width_before_benchmark)
+        self.comparison_frame.pack_propagate(False)
+        self.comparison_frame.pack(
+            side="right",
+            fill="both",
+            expand=False,
+            padx=(4, 0),
+        )
+        self.benchmark_button.configure(text="S&P 500 비교 닫기")
+
+    def _hide_benchmark(self) -> None:
+        self.benchmark_visible = False
+        self.comparison_frame.pack_forget()
+        self.comparison_frame.pack_propagate(True)
+        self.benchmark_button.configure(text="S&P 500 비교 열기", state="normal")
+        self.benchmark_button.place_configure(
+            relx=1.0,
+            x=-10,
+            y=6,
+            anchor="ne",
+        )
+        self._clear_crosshair()
+        if self._state_before_benchmark == "zoomed":
+            try:
+                self.state("zoomed")
+            except tk.TclError:
+                pass
+        elif self._geometry_before_benchmark and self.state() == "normal":
+            try:
+                self.geometry(self._geometry_before_benchmark)
+            except tk.TclError:
+                pass
+        self._geometry_before_benchmark = None
+        self._primary_width_before_benchmark = 0
+        self._state_before_benchmark = "normal"
+        self._window_size_before_benchmark = (0, 0)
+        self._window_position_before_benchmark = (0, 0)
+        self._schedule_redraw()
+
+    def _expand_for_benchmark(self) -> None:
+        self.update_idletasks()
+        width, height = self._window_size_before_benchmark
+        if width <= 0 or height <= 0:
+            width, height = self.winfo_width(), self.winfo_height()
+        desired_width = expanded_comparison_width(
+            width,
+            self._primary_width_before_benchmark,
+        )
+        desired_height = height
+        x, y = self._window_position_before_benchmark
+        x = max(0, x)
+        y = max(0, y)
+        self.maxsize(
+            max(desired_width, self.winfo_screenwidth()),
+            max(desired_height, self.winfo_screenheight()),
+        )
+        self.geometry(f"{desired_width}x{desired_height}+{x}+{y}")
+        self.update_idletasks()
+
+    def _load_benchmark_worker(self) -> None:
+        try:
+            raw = load_weekly_data(
+                BENCHMARK_TICKER,
+                include_current_week=True,
+            )
+            prepared = calculate_indicators(raw)
+        except Exception as exc:  # Network/provider errors are shown in the UI.
+            try:
+                self.after(0, self._finish_benchmark_error, str(exc))
+            except tk.TclError:
+                pass
+            return
+        try:
+            self.after(0, self._finish_benchmark_load, prepared)
+        except tk.TclError:
+            pass
+
+    def _finish_benchmark_load(self, data: pd.DataFrame) -> None:
+        self.benchmark_loading = False
+        prepared = data.loc[:, CHART_COLUMNS].copy()
+        prepared.index = _normalized_index(pd.DatetimeIndex(prepared.index))
+        self.benchmark_data = prepared[~prepared.index.duplicated(keep="last")].sort_index()
+        latest = self.benchmark_data.index[-1].strftime("%Y-%m-%d")
+        self.comparison_status_var.set(f"S&P 500 (^GSPC)  |  데이터 기준일 {latest}")
+        self.benchmark_button.configure(text="S&P 500 비교 닫기", state="normal")
+        self._schedule_redraw()
+
+    def _finish_benchmark_error(self, details: str) -> None:
+        self.benchmark_loading = False
+        self.comparison_status_var.set("S&P 500 데이터를 불러오지 못했습니다.")
+        self.benchmark_button.configure(text="S&P 500 다시 시도", state="normal")
+        messagebox.showerror(
+            "S&P 500 비교 차트 오류",
+            "S&P 500 주봉 데이터를 불러오지 못했습니다.\n\n" + details,
+            parent=self,
+        )
 
     def show_cycle(
         self,
@@ -260,6 +465,7 @@ class ChartPreviewWindow(tk.Toplevel):
         self._redraw_job = None
         self.canvas.delete("all")
         if self.data.empty or self.canvas.winfo_width() < 200:
+            self._redraw_benchmark()
             return
 
         panels = self._panels()
@@ -276,6 +482,7 @@ class ChartPreviewWindow(tk.Toplevel):
         self._draw_signal_lines(panels)
         self._draw_date_axis(visible, x_positions, panels[-1].bottom)
         self._show_rightmost_values(panels, visible)
+        self._redraw_benchmark()
 
     def _panels(self) -> list[Panel]:
         height = max(500, self.canvas.winfo_height())
@@ -691,6 +898,127 @@ class ChartPreviewWindow(tk.Toplevel):
                 font=(self.ui_font_family, 8),
             )
 
+    def _comparison_plot_edges(self) -> tuple[float, float]:
+        return 64.0, max(180.0, self.comparison_canvas.winfo_width() - 92.0)
+
+    def _comparison_panels(self) -> list[Panel]:
+        original_canvas = self.canvas
+        self.canvas = self.comparison_canvas
+        try:
+            panels = self._panels()
+        finally:
+            self.canvas = original_canvas
+        price = panels[0]
+        panels[0] = Panel(f"S&P 500 ({BENCHMARK_TICKER})", price.top, price.bottom)
+        return panels
+
+    def _benchmark_slice(self) -> pd.DataFrame:
+        if self.data.empty or self.benchmark_data.empty:
+            return pd.DataFrame()
+        start_date = self.data.index[self.view_start]
+        end_date = self.data.index[self.view_end]
+        start, end = comparison_view_indices(
+            self.benchmark_data.index,
+            start_date,
+            end_date,
+        )
+        return self.benchmark_data.iloc[start : end + 1]
+
+    def _redraw_benchmark(self) -> None:
+        self.comparison_canvas.delete("all")
+        if not self.benchmark_visible:
+            return
+        if self.benchmark_loading:
+            self.comparison_canvas.create_text(
+                max(1, self.comparison_canvas.winfo_width()) / 2,
+                max(1, self.comparison_canvas.winfo_height()) / 2,
+                text="S&P 500 데이터를 불러오는 중입니다...",
+                fill=self.palette["chart_text"],
+                font=(self.ui_font_family, 10),
+            )
+            return
+        visible = self._benchmark_slice()
+        if visible.empty or self.comparison_canvas.winfo_width() < 160:
+            return
+
+        original_canvas = self.canvas
+        self.canvas = self.comparison_canvas
+        try:
+            panels = self._comparison_panels()
+            xs = self._x_positions(len(visible))
+            self._draw_panel_frames(panels, visible)
+            self._draw_price(panels[0], visible, xs)
+            self._draw_volume(panels[1], visible, xs)
+            self._draw_momentum(panels[2], visible, xs)
+            self._draw_macd(panels[3], visible, xs)
+            self._draw_oscillator(panels[4], visible, xs, "RSI")
+            self._draw_oscillator(panels[5], visible, xs, "MFI")
+            self._draw_date_axis(visible, xs, panels[-1].bottom)
+            self._draw_panel_hover_values(panels, visible.iloc[-1])
+        finally:
+            self.canvas = original_canvas
+
+        self._draw_benchmark_signal_lines(panels, visible)
+        self._set_benchmark_status(visible.index[-1])
+
+    def _draw_benchmark_signal_lines(
+        self,
+        panels: list[Panel],
+        visible: pd.DataFrame,
+    ) -> None:
+        if self.cycle is None or visible.empty:
+            return
+        left, right = self._comparison_plot_edges()
+        count = len(visible)
+        for label, column, color in SIGNAL_STYLES:
+            signal_date = _timestamp(self.cycle.get(column))
+            if signal_date is None or signal_date < visible.index[0] or signal_date > visible.index[-1]:
+                continue
+            position = int(visible.index.searchsorted(signal_date, side="left"))
+            position = min(count - 1, max(0, position))
+            x = left + (position + 0.5) / max(1, count) * (right - left)
+            faded = _blend_hex(
+                color,
+                self.palette["chart_panel"],
+                BENCHMARK_SIGNAL_OPACITY,
+            )
+            self.comparison_canvas.create_line(
+                x,
+                panels[0].top,
+                x,
+                panels[-1].bottom,
+                fill=faded,
+                width=BENCHMARK_SIGNAL_WIDTH,
+                dash=(5, 3),
+            )
+            self.comparison_canvas.create_text(
+                x + 3,
+                panels[0].top + 22,
+                text=f"{self.ticker} {label}",
+                anchor="nw",
+                fill=faded,
+                font=(self.ui_font_family, 8, "bold"),
+            )
+
+    def _show_benchmark_values(
+        self,
+        panels: list[Panel],
+        row: pd.Series,
+        date,
+    ) -> None:
+        original_canvas = self.canvas
+        self.canvas = self.comparison_canvas
+        try:
+            self._draw_panel_hover_values(panels, row)
+        finally:
+            self.canvas = original_canvas
+        self._set_benchmark_status(date)
+
+    def _set_benchmark_status(self, date) -> None:
+        self.comparison_status_var.set(
+            f"S&P 500 (^GSPC)  |  {pd.Timestamp(date).strftime('%Y-%m-%d')}"
+        )
+
     def _on_motion(self, event) -> None:
         if self.data.empty or self._drag_origin is not None:
             return
@@ -730,7 +1058,101 @@ class ChartPreviewWindow(tk.Toplevel):
         date = self.data.index[position].strftime("%Y-%m-%d")
         self._draw_panel_hover_values(panels, row)
         self._draw_crosshair_date(x, panels[-1].bottom, date)
+        self._draw_comparison_crosshair(pd.Timestamp(self.data.index[position]))
         self.hover_var.set(f"{date}  |  십자선 수치는 각 보조지표 제목 옆에 표시됩니다.")
+
+    def _on_comparison_motion(self, event) -> None:
+        if not self.benchmark_visible or self.benchmark_data.empty or self._drag_origin is not None:
+            return
+        visible = self._benchmark_slice()
+        if visible.empty:
+            return
+        left, right = self._comparison_plot_edges()
+        panels = self._comparison_panels()
+        if (
+            event.x < left
+            or event.x > right
+            or event.y < panels[0].top
+            or event.y > panels[-1].bottom
+        ):
+            self._clear_crosshair()
+            return
+        relative = (event.x - left) / max(1.0, right - left)
+        offset = min(len(visible) - 1, max(0, int(relative * len(visible))))
+        date = pd.Timestamp(visible.index[offset])
+        self._draw_comparison_crosshair(date, horizontal_y=event.y)
+        self._draw_primary_crosshair(date)
+
+    def _draw_comparison_crosshair(
+        self,
+        date: pd.Timestamp,
+        horizontal_y: float | None = None,
+    ) -> None:
+        if not self.benchmark_visible or self.benchmark_data.empty:
+            return
+        visible = self._benchmark_slice()
+        if visible.empty:
+            return
+        position = int(visible.index.searchsorted(pd.Timestamp(date), side="left"))
+        position = min(len(visible) - 1, max(0, position))
+        left, right = self._comparison_plot_edges()
+        panels = self._comparison_panels()
+        x = left + (position + 0.5) / max(1, len(visible)) * (right - left)
+        self.comparison_canvas.delete("crosshair")
+        self.comparison_canvas.create_line(
+            x,
+            panels[0].top,
+            x,
+            panels[-1].bottom,
+            fill=self.palette["crosshair"],
+            dash=(3, 3),
+            tags="crosshair",
+        )
+        if horizontal_y is not None:
+            self.comparison_canvas.create_line(
+                left,
+                horizontal_y,
+                right,
+                horizontal_y,
+                fill=self.palette["crosshair"],
+                dash=(3, 3),
+                tags="crosshair",
+            )
+        row = visible.iloc[position]
+        actual_date = pd.Timestamp(visible.index[position])
+        self._show_benchmark_values(panels, row, actual_date)
+        self._draw_comparison_crosshair_date(
+            x,
+            panels[-1].bottom,
+            actual_date.strftime("%Y-%m-%d"),
+        )
+
+    def _draw_primary_crosshair(self, date: pd.Timestamp) -> None:
+        if self.data.empty:
+            return
+        position = int(self.data.index.searchsorted(pd.Timestamp(date), side="left"))
+        position = min(self.view_end, max(self.view_start, position))
+        count = self.view_end - self.view_start + 1
+        left, right = self._plot_edges()
+        panels = self._panels()
+        x = left + ((position - self.view_start) + 0.5) / max(1, count) * (right - left)
+        self.canvas.delete("crosshair")
+        self.canvas.create_line(
+            x,
+            panels[0].top,
+            x,
+            panels[-1].bottom,
+            fill=self.palette["crosshair"],
+            dash=(3, 3),
+            tags="crosshair",
+        )
+        row = self.data.iloc[position]
+        actual_date = pd.Timestamp(self.data.index[position])
+        self._draw_panel_hover_values(panels, row)
+        self._draw_crosshair_date(x, panels[-1].bottom, actual_date.strftime("%Y-%m-%d"))
+        self.hover_var.set(
+            f"{actual_date.strftime('%Y-%m-%d')}  |  S&P 500 차트와 십자선 연동"
+        )
 
     def _draw_crosshair_date(self, x: float, bottom: float, date: str) -> None:
         left, right = self._plot_edges()
@@ -754,6 +1176,30 @@ class ChartPreviewWindow(tk.Toplevel):
             fill=self.palette["date_label_text"],
             font=self.panel_value_font,
             tags=("crosshair", "crosshair_date_label"),
+        )
+
+    def _draw_comparison_crosshair_date(self, x: float, bottom: float, date: str) -> None:
+        left, right = self._comparison_plot_edges()
+        half_width = self.panel_value_font.measure(date) / 2 + 6
+        center_x = min(right - half_width, max(left + half_width, x))
+        top = bottom + 2
+        label_bottom = bottom + 21
+        self.comparison_canvas.create_rectangle(
+            center_x - half_width,
+            top,
+            center_x + half_width,
+            label_bottom,
+            outline=self.palette["date_label_background"],
+            fill=self.palette["date_label_background"],
+            tags="crosshair",
+        )
+        self.comparison_canvas.create_text(
+            center_x,
+            (top + label_bottom) / 2,
+            text=date,
+            fill=self.palette["date_label_text"],
+            font=self.panel_value_font,
+            tags="crosshair",
         )
 
     def _draw_panel_hover_values(self, panels: list[Panel], row: pd.Series) -> None:
@@ -827,10 +1273,18 @@ class ChartPreviewWindow(tk.Toplevel):
 
     def _clear_crosshair(self, _event=None) -> None:
         self.canvas.delete("crosshair")
+        self.comparison_canvas.delete("crosshair")
         if self.data.empty:
             return
         visible = self.data.iloc[self.view_start : self.view_end + 1]
         self._show_rightmost_values(self._panels(), visible)
+        benchmark_visible = self._benchmark_slice()
+        if self.benchmark_visible and not benchmark_visible.empty:
+            self._show_benchmark_values(
+                self._comparison_panels(),
+                benchmark_visible.iloc[-1],
+                benchmark_visible.index[-1],
+            )
 
     def _show_rightmost_values(
         self,
@@ -850,12 +1304,22 @@ class ChartPreviewWindow(tk.Toplevel):
         if self.data.empty or event.delta == 0:
             return
         left, right = self._plot_edges()
+        anchor = min(1.0, max(0.0, (event.x - left) / max(1.0, right - left)))
+        self._zoom_view(event.delta, anchor)
+
+    def _on_comparison_mousewheel(self, event) -> None:
+        if self.data.empty or event.delta == 0:
+            return
+        left, right = self._comparison_plot_edges()
+        anchor = min(1.0, max(0.0, (event.x - left) / max(1.0, right - left)))
+        self._zoom_view(event.delta, anchor)
+
+    def _zoom_view(self, delta: int, anchor: float) -> None:
         count = self.view_end - self.view_start + 1
         new_count = int(
-            round(count * (ZOOM_IN_FACTOR if event.delta > 0 else ZOOM_OUT_FACTOR))
+            round(count * (ZOOM_IN_FACTOR if delta > 0 else ZOOM_OUT_FACTOR))
         )
         new_count = min(len(self.data), max(12, new_count))
-        anchor = min(1.0, max(0.0, (event.x - left) / max(1.0, right - left)))
         anchor_index = self.view_start + int(anchor * max(0, count - 1))
         new_start = anchor_index - int(anchor * max(0, new_count - 1))
         self.view_start, self.view_end = _clamped_view(new_start, new_count, len(self.data))
@@ -865,22 +1329,41 @@ class ChartPreviewWindow(tk.Toplevel):
     def _on_drag_start(self, event) -> None:
         if self.data.empty:
             return
-        self._drag_origin = (event.x, self.view_start, self.view_end)
+        left, right = self._plot_edges()
+        self._start_drag(event.x, right - left)
+
+    def _on_comparison_drag_start(self, event) -> None:
+        if self.data.empty:
+            return
+        left, right = self._comparison_plot_edges()
+        self._start_drag(event.x, right - left)
+
+    def _start_drag(self, x: int, plot_width: float) -> None:
+        self._drag_origin = (x, self.view_start, self.view_end, max(1.0, plot_width))
         self.canvas.configure(cursor="fleur")
+        self.comparison_canvas.configure(cursor="fleur")
 
     def _on_drag_motion(self, event) -> None:
         if self._drag_origin is None:
             return
-        origin_x, origin_start, origin_end = self._drag_origin
+        self._update_drag(event.x)
+
+    def _on_comparison_drag_motion(self, event) -> None:
+        if self._drag_origin is None:
+            return
+        self._update_drag(event.x)
+
+    def _update_drag(self, x: int) -> None:
+        origin_x, origin_start, origin_end, plot_width = self._drag_origin
         count = origin_end - origin_start + 1
-        left, right = self._plot_edges()
-        shift = int(round((origin_x - event.x) / max(1.0, right - left) * count))
+        shift = int(round((origin_x - x) / plot_width * count))
         self.view_start, self.view_end = _clamped_view(origin_start + shift, count, len(self.data))
         self._schedule_redraw()
 
     def _on_drag_end(self, _event=None) -> None:
         self._drag_origin = None
         self.canvas.configure(cursor="crosshair")
+        self.comparison_canvas.configure(cursor="crosshair")
 
     def _reset_view(self, _event=None) -> None:
         if self.data.empty:
