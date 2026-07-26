@@ -1,0 +1,58 @@
+name: MMRM Three-Stage Weekly Scenario Scan
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 16 * * 5"
+      timezone: "America/New_York"
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore active scenario state
+        uses: actions/cache/restore@v4
+        with:
+          path: outputs/mmrm_active_scenarios.csv
+          key: mmrm-active-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            mmrm-active-state-
+
+      - name: Run weekly scanner
+        run: python weekly_scan.py
+
+      - name: Save active scenario state
+        if: always() && hashFiles('outputs/mmrm_active_scenarios.csv') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: outputs/mmrm_active_scenarios.csv
+          key: mmrm-active-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mmrm-three-stage-weekly-scan-${{ github.run_number }}
+          path: |
+            outputs/signal_events_*.csv
+            outputs/active_scenarios_*.csv
+            outputs/closed_results_*.csv
+            outputs/scan_failures_*.csv
+          if-no-files-found: warn
+          retention-days: 30
