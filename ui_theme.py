@@ -56,7 +56,9 @@ THEMES = {
         "history_success_low_bg": "#e2f3e7",
         "history_success_medium_bg": "#c7e8d0",
         "history_success_high_bg": "#9fd5ac",
-        "history_loss_bg": "#f6e5e7",
+        "history_loss_low_bg": "#f8ecec",
+        "history_loss_medium_bg": "#f3d1d1",
+        "history_loss_high_bg": "#e9a9ad",
         "history_flat_bg": "#f0f1f2",
     },
     "dark": {
@@ -96,7 +98,9 @@ THEMES = {
         "history_success_low_bg": "#304238",
         "history_success_medium_bg": "#24402d",
         "history_success_high_bg": "#326240",
-        "history_loss_bg": "#352326",
+        "history_loss_low_bg": "#332225",
+        "history_loss_medium_bg": "#47282c",
+        "history_loss_high_bg": "#643238",
         "history_flat_bg": "#292929",
     },
 }

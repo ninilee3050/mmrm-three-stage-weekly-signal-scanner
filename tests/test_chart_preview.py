@@ -21,6 +21,7 @@ from chart_preview import (
     OSCILLATOR_CENTER,
     OSCILLATOR_LOWER,
     OSCILLATOR_UPPER,
+    Panel,
     POSITIVE_BAR_COLOR,
     VOLUME_MA_STYLE,
     ZOOM_IN_FACTOR,
@@ -33,6 +34,7 @@ from chart_preview import (
     expanded_comparison_width,
     format_cycle_return,
     moving_average_styles,
+    price_crosshair_y,
 )
 
 
@@ -78,6 +80,29 @@ def test_comparison_view_uses_the_stock_visible_date_range() -> None:
 
 def test_comparison_expands_to_the_right_without_shrinking_primary_chart() -> None:
     assert expanded_comparison_width(1600, 1440) == 3044
+
+
+def test_synchronized_crosshair_maps_each_chart_close_to_its_own_price_scale() -> None:
+    data = pd.DataFrame(
+        {
+            "Low": [90.0, 100.0],
+            "High": [110.0, 130.0],
+            "MA_5": [98.0, 105.0],
+            "MA_20": [97.0, 103.0],
+            "MA_50": [96.0, 101.0],
+            "MA_150": [92.0, 95.0],
+            "MA_200": [91.0, 93.0],
+        }
+    )
+    panel = Panel("가격", 10.0, 210.0)
+
+    lower_close_y = price_crosshair_y(data, panel, 100.0)
+    higher_close_y = price_crosshair_y(data, panel, 120.0)
+
+    assert lower_close_y is not None
+    assert higher_close_y is not None
+    assert panel.top < higher_close_y < lower_close_y < panel.bottom
+    assert price_crosshair_y(data, panel, float("nan")) is None
 
 
 def test_cycle_return_summary_uses_stored_returns_and_statuses() -> None:

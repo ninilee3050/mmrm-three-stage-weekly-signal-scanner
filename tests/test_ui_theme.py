@@ -39,6 +39,13 @@ def test_dark_palette_has_distinct_chart_and_table_colors() -> None:
     assert dark["signal_third_bg"] != dark["field"]
     assert dark["history_failure_bg"] != dark["history_success_high_bg"]
     assert dark["history_success_low_bg"] != dark["history_success_high_bg"]
+    assert len(
+        {
+            dark["history_loss_low_bg"],
+            dark["history_loss_medium_bg"],
+            dark["history_loss_high_bg"],
+        }
+    ) == 3
 
 
 def test_dark_palette_uses_neutral_codex_style_surfaces() -> None:

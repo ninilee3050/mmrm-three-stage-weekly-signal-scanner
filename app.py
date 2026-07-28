@@ -637,7 +637,9 @@ class BuyPointApp(tk.Tk):
             "history_success_low": "history_success_low_bg",
             "history_success_medium": "history_success_medium_bg",
             "history_success_high": "history_success_high_bg",
-            "history_loss": "history_loss_bg",
+            "history_loss_low": "history_loss_low_bg",
+            "history_loss_medium": "history_loss_medium_bg",
+            "history_loss_high": "history_loss_high_bg",
             "history_flat": "history_flat_bg",
         }
         for tag, color_key in tag_colors.items():
@@ -656,6 +658,9 @@ class BuyPointApp(tk.Tk):
             tag = history_cycle_tag(
                 row.get("결과"),
                 row.get("3개월후 수익률"),
+                row.get("6개월후 수익률"),
+                row.get("9개월후 수익률"),
+                row.get("12개월후 수익률"),
             )
             tree.item(item, tags=(tag,) if tag else ())
 
@@ -1788,7 +1793,8 @@ def active_scenario_tag(state: object) -> str:
     return ""
 
 
-def history_cycle_tag(result: object, three_month_return: object) -> str:
+def history_cycle_tag(result: object, *horizon_returns: object) -> str:
+    """Color a completed cycle by multi-horizon consistency and maturity."""
     result_text = str(result)
     if "폐기" in result_text:
         return "history_discard"
@@ -1797,20 +1803,45 @@ def history_cycle_tag(result: object, three_month_return: object) -> str:
     if result_text != "매수 성공":
         return ""
 
-    numeric_return = pd.to_numeric(
-        pd.Series([three_month_return]), errors="coerce"
-    ).iloc[0]
-    if pd.isna(numeric_return):
+    numeric_returns = pd.to_numeric(
+        pd.Series(horizon_returns, dtype=object), errors="coerce"
+    ).dropna()
+    confirmed_count = len(numeric_returns)
+    if confirmed_count == 0:
         return "history_success_pending"
-    if numeric_return < 0:
-        return "history_loss"
-    if numeric_return == 0:
-        return "history_flat"
-    if numeric_return < 10:
+
+    positive_count = int((numeric_returns > 0).sum())
+    negative_count = int((numeric_returns < 0).sum())
+
+    if positive_count == confirmed_count:
+        if confirmed_count == 4:
+            return "history_success_high"
+        if confirmed_count == 3:
+            return "history_success_medium"
         return "history_success_low"
-    if numeric_return < 25:
-        return "history_success_medium"
-    return "history_success_high"
+
+    if negative_count == confirmed_count:
+        if confirmed_count == 4:
+            return "history_loss_high"
+        if confirmed_count == 3:
+            return "history_loss_medium"
+        return "history_loss_low"
+
+    if confirmed_count == 4:
+        if positive_count == 3:
+            return "history_success_medium"
+        if positive_count == 2:
+            return "history_flat"
+        if positive_count == 1 and negative_count > positive_count:
+            return "history_loss_low"
+
+    if positive_count > negative_count:
+        return "history_success_low"
+    if negative_count > positive_count:
+        return "history_loss_low"
+    if positive_count == negative_count:
+        return "history_flat"
+    return "history_success_pending"
 
 
 def scan_event_priority(stage: object, result: object) -> int:

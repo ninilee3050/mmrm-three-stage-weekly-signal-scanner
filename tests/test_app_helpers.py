@@ -412,15 +412,40 @@ def test_active_scenarios_prioritize_third_waiting_and_use_completed_stage_color
     assert active_scenario_tag("매수 성공") == ""
 
 
-def test_history_cycle_colors_separate_process_result_and_three_month_return() -> None:
+def test_history_cycle_colors_use_all_confirmed_return_horizons() -> None:
     assert history_cycle_tag("2차 이격 과다 폐기", "해당 없음") == "history_discard"
     assert history_cycle_tag("실패", "해당 없음") == "history_failure"
-    assert history_cycle_tag("매수 성공", "진행 중") == "history_success_pending"
-    assert history_cycle_tag("매수 성공", -3.0) == "history_loss"
-    assert history_cycle_tag("매수 성공", 0.0) == "history_flat"
-    assert history_cycle_tag("매수 성공", 5.0) == "history_success_low"
-    assert history_cycle_tag("매수 성공", 15.0) == "history_success_medium"
-    assert history_cycle_tag("매수 성공", 30.0) == "history_success_high"
+    assert history_cycle_tag(
+        "매수 성공", "진행 중", "진행 중", "진행 중", "진행 중"
+    ) == "history_success_pending"
+
+    assert history_cycle_tag("매수 성공", 5.0, "진행 중", "진행 중", "진행 중") == (
+        "history_success_low"
+    )
+    assert history_cycle_tag("매수 성공", 5.0, 8.0, "진행 중", "진행 중") == (
+        "history_success_low"
+    )
+    assert history_cycle_tag("매수 성공", 5.0, 8.0, 12.0, "진행 중") == (
+        "history_success_medium"
+    )
+    assert history_cycle_tag("매수 성공", 5.0, 8.0, 12.0, 20.0) == (
+        "history_success_high"
+    )
+
+    assert history_cycle_tag("매수 성공", 5.0, 8.0, 12.0, -2.0) == (
+        "history_success_medium"
+    )
+    assert history_cycle_tag("매수 성공", 5.0, 8.0, -3.0, -6.0) == "history_flat"
+    assert history_cycle_tag("매수 성공", 5.0, -2.0, -3.0, -6.0) == (
+        "history_loss_low"
+    )
+    assert history_cycle_tag("매수 성공", -1.0, -2.0, -3.0, "진행 중") == (
+        "history_loss_medium"
+    )
+    assert history_cycle_tag("매수 성공", -1.0, -2.0, -3.0, -4.0) == (
+        "history_loss_high"
+    )
+    assert history_cycle_tag("매수 성공", 0.0, 0.0, 0.0, 0.0) == "history_flat"
 
 
 def test_scan_events_show_ticker_and_sector_win_rates_with_samples() -> None:

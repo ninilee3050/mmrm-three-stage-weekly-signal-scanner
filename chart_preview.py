@@ -653,11 +653,7 @@ class ChartPreviewWindow(tk.Toplevel):
 
     def _draw_price(self, panel: Panel, data: pd.DataFrame, xs: np.ndarray) -> None:
         ma_styles = moving_average_styles(self.theme_mode)
-        values = pd.concat(
-            [data[["Low", "High"]], data[list(ma_styles)]],
-            axis=1,
-        ).to_numpy(dtype=float)
-        low, high = _finite_range(values, padding=0.06)
+        low, high = _price_range(data)
         y = lambda value: _map_y(value, low, high, panel)
         self._draw_scale(panel, low, high)
 
@@ -1212,6 +1208,10 @@ class ChartPreviewWindow(tk.Toplevel):
             dash=(3, 3),
             tags="crosshair",
         )
+        row = visible.iloc[position]
+        actual_date = pd.Timestamp(visible.index[position])
+        if horizontal_y is None:
+            horizontal_y = price_crosshair_y(visible, panels[0], row.get("Close"))
         if horizontal_y is not None:
             self.comparison_canvas.create_line(
                 left,
@@ -1222,8 +1222,6 @@ class ChartPreviewWindow(tk.Toplevel):
                 dash=(3, 3),
                 tags="crosshair",
             )
-        row = visible.iloc[position]
-        actual_date = pd.Timestamp(visible.index[position])
         self._show_benchmark_values(panels, row, actual_date)
         self._draw_comparison_crosshair_date(
             x,
@@ -1252,6 +1250,18 @@ class ChartPreviewWindow(tk.Toplevel):
         )
         row = self.data.iloc[position]
         actual_date = pd.Timestamp(self.data.index[position])
+        visible = self.data.iloc[self.view_start : self.view_end + 1]
+        horizontal_y = price_crosshair_y(visible, panels[0], row.get("Close"))
+        if horizontal_y is not None:
+            self.canvas.create_line(
+                left,
+                horizontal_y,
+                right,
+                horizontal_y,
+                fill=self.palette["crosshair"],
+                dash=(3, 3),
+                tags="crosshair",
+            )
         self._draw_panel_hover_values(panels, row)
         self._draw_crosshair_date(x, panels[-1].bottom, actual_date.strftime("%Y-%m-%d"))
         self.hover_var.set(
@@ -1522,6 +1532,27 @@ def _map_y(value: float, low: float, high: float, panel: Panel) -> float:
         return (panel.top + panel.bottom) / 2
     ratio = (float(value) - low) / (high - low)
     return panel.bottom - ratio * (panel.bottom - panel.top)
+
+
+def _price_range(data: pd.DataFrame) -> tuple[float, float]:
+    values = pd.concat(
+        [data[["Low", "High"]], data[list(MA_STYLES)]],
+        axis=1,
+    ).to_numpy(dtype=float)
+    return _finite_range(values, padding=0.06)
+
+
+def price_crosshair_y(
+    data: pd.DataFrame,
+    panel: Panel,
+    close_value: object,
+) -> float | None:
+    """Map one synchronized date's close to its own chart price panel."""
+    numeric_close = pd.to_numeric(pd.Series([close_value]), errors="coerce").iloc[0]
+    if pd.isna(numeric_close) or data.empty:
+        return None
+    low, high = _price_range(data)
+    return _map_y(float(numeric_close), low, high, panel)
 
 
 def _clamped_view(start: int, count: int, total: int) -> tuple[int, int]:
