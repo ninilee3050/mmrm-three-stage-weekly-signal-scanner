@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pandas as pd
 
 from app import (
@@ -11,6 +13,7 @@ from app import (
     SCAN_EVENT_DISPLAY_COLUMNS,
     SCAN_FAILURE_COLUMNS,
     SIGNAL_HISTORY_DISPLAY_COLUMNS,
+    BuyPointApp,
     _column_width,
     _format_value,
     _table_required_width,
@@ -28,6 +31,7 @@ from app import (
     save_closed_scenarios,
     scan_event_tag,
     scanner_table_for_display,
+    signal_cycle_position,
     signal_cycles_for_display,
 )
 from market_cap_provider import MarketCapCompany
@@ -50,6 +54,106 @@ def test_table_panel_widths_cover_every_visible_column() -> None:
     assert all(scanner_width >= _table_required_width(columns) for columns in scanner_tables)
     assert _column_width("회사명") >= 220
     assert _column_width("결과") >= 200
+
+
+def test_signal_cycle_position_matches_the_exact_history_cycle() -> None:
+    cycles = pd.DataFrame(
+        [
+            {
+                "FirstSignalDate": pd.Timestamp("2024-01-01"),
+                "SecondSignalDate": pd.Timestamp("2024-02-05"),
+                "ThirdDecisionDate": pd.Timestamp("2024-02-19"),
+                "Outcome": "매수 성공",
+            },
+            {
+                "FirstSignalDate": pd.Timestamp("2025-03-03"),
+                "SecondSignalDate": pd.NaT,
+                "ThirdDecisionDate": pd.NaT,
+                "Outcome": "2차 신호 대기",
+            },
+        ]
+    )
+
+    assert signal_cycle_position(cycles, cycles.iloc[0].copy()) == 0
+    assert signal_cycle_position(cycles, cycles.iloc[1].copy()) == 1
+    assert signal_cycle_position(cycles, None) is None
+    assert signal_cycle_position(pd.DataFrame(), cycles.iloc[0]) is None
+
+
+def test_signal_cycle_position_rejects_a_different_outcome() -> None:
+    cycles = pd.DataFrame(
+        [
+            {
+                "FirstSignalDate": pd.Timestamp("2024-01-01"),
+                "SecondSignalDate": pd.NaT,
+                "ThirdDecisionDate": pd.NaT,
+                "Outcome": "2차 신호 대기",
+            }
+        ]
+    )
+    different = cycles.iloc[0].copy()
+    different["Outcome"] = "실패"
+
+    assert signal_cycle_position(cycles, different) is None
+
+
+def test_chart_history_navigation_moves_one_cycle_and_stops_at_edges() -> None:
+    cycles = pd.DataFrame(
+        [
+            {"FirstSignalDate": pd.Timestamp("2024-01-01"), "Outcome": "실패"},
+            {"FirstSignalDate": pd.Timestamp("2025-01-06"), "Outcome": "매수 성공"},
+            {"FirstSignalDate": pd.Timestamp("2026-01-05"), "Outcome": "2차 신호 대기"},
+        ]
+    )
+    app = object.__new__(BuyPointApp)
+    app.current_signal_cycles = cycles
+    app.chart_window = SimpleNamespace(cycle=cycles.iloc[1].copy())
+    app._chart_is_open = lambda: True
+    shown: list[pd.Series] = []
+    app._show_chart = shown.append
+
+    BuyPointApp._navigate_chart_history(app, -1)
+    BuyPointApp._navigate_chart_history(app, 1)
+    assert [row["FirstSignalDate"] for row in shown] == [
+        pd.Timestamp("2024-01-01"),
+        pd.Timestamp("2026-01-05"),
+    ]
+
+    app.chart_window.cycle = cycles.iloc[0].copy()
+    shown.clear()
+    BuyPointApp._navigate_chart_history(app, -1)
+    assert shown == []
+
+
+def test_select_history_position_selects_focuses_and_scrolls_the_row() -> None:
+    class FakeTree:
+        def __init__(self) -> None:
+            self.selected = None
+            self.focused = None
+            self.visible = None
+
+        def get_children(self):
+            return ("row0", "row1", "row2")
+
+        def selection_set(self, item):
+            self.selected = item
+
+        def focus(self, item):
+            self.focused = item
+
+        def see(self, item):
+            self.visible = item
+
+    app = object.__new__(BuyPointApp)
+    app.buy_tree = FakeTree()
+    app._syncing_chart_history_selection = False
+
+    BuyPointApp._select_history_position(app, 1)
+
+    assert app.buy_tree.selected == "row1"
+    assert app.buy_tree.focused == "row1"
+    assert app.buy_tree.visible == "row1"
+    assert app._syncing_chart_history_selection is False
 
 
 def test_closed_scenario_history_collects_current_top100_and_sorts_by_first_signal() -> None:

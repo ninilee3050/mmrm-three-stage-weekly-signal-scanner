@@ -164,6 +164,7 @@ class BuyPointApp(tk.Tk):
         self.current_chart_data = pd.DataFrame()
         self.current_signal_cycles = pd.DataFrame()
         self.chart_window: ChartPreviewWindow | None = None
+        self._syncing_chart_history_selection = False
         self.open_chart_after_search = False
         self.pending_chart_first_signal_date: pd.Timestamp | None = None
 
@@ -1253,7 +1254,18 @@ class BuyPointApp(tk.Tk):
         self._show_selected_history_cycle(open_window=True)
 
     def _on_history_select(self, _event=None) -> None:
+        if self._syncing_chart_history_selection:
+            return
         if self._chart_is_open():
+            selected = self.buy_tree.selection()
+            if selected:
+                selected_position = self.buy_tree.index(selected[0])
+                chart_position = signal_cycle_position(
+                    self.current_signal_cycles,
+                    self.chart_window.cycle,
+                )
+                if selected_position == chart_position:
+                    return
             self._show_selected_history_cycle(open_window=False)
 
     def _show_selected_history_cycle(self, open_window: bool) -> None:
@@ -1291,10 +1303,12 @@ class BuyPointApp(tk.Tk):
     def _show_chart(self, cycle: pd.Series | None) -> None:
         if not self.current_ticker or self.current_chart_data.empty:
             return
+        position = signal_cycle_position(self.current_signal_cycles, cycle)
         if not self._chart_is_open():
             self.chart_window = ChartPreviewWindow(
                 self,
                 on_close=self._on_chart_closed,
+                on_navigate=self._navigate_chart_history,
                 theme_mode=self.theme_mode,
             )
         try:
@@ -1303,9 +1317,43 @@ class BuyPointApp(tk.Tk):
                 self.current_chart_data,
                 cycle,
                 company=self.current_company,
+                navigation_index=position,
+                navigation_total=len(self.current_signal_cycles),
             )
+            if position is not None:
+                self._select_history_position(position)
         except ValueError as exc:
             messagebox.showerror("차트 미리보기 오류", str(exc))
+
+    def _navigate_chart_history(self, direction: int) -> None:
+        if self.current_signal_cycles.empty or not self._chart_is_open():
+            return
+        current = signal_cycle_position(
+            self.current_signal_cycles,
+            self.chart_window.cycle,
+        )
+        if current is None:
+            current = len(self.current_signal_cycles) - 1
+        target = min(
+            len(self.current_signal_cycles) - 1,
+            max(0, current + (-1 if direction < 0 else 1)),
+        )
+        if target == current:
+            return
+        self._show_chart(self.current_signal_cycles.iloc[target])
+
+    def _select_history_position(self, position: int) -> None:
+        children = self.buy_tree.get_children()
+        if position < 0 or position >= len(children):
+            return
+        item = children[position]
+        self._syncing_chart_history_selection = True
+        try:
+            self.buy_tree.selection_set(item)
+            self.buy_tree.focus(item)
+            self.buy_tree.see(item)
+        finally:
+            self._syncing_chart_history_selection = False
 
     def _chart_is_open(self) -> bool:
         if self.chart_window is None:
@@ -1982,6 +2030,41 @@ def signal_cycles_for_display(data: pd.DataFrame) -> pd.DataFrame:
         missing = display[display_column].isna()
         display.loc[missing, display_column] = display.loc[missing, status_column]
     return display.reindex(columns=SIGNAL_HISTORY_DISPLAY_COLUMNS)
+
+
+def signal_cycle_position(
+    cycles: pd.DataFrame,
+    cycle: pd.Series | None,
+) -> int | None:
+    """Return the table row position corresponding to a chart cycle."""
+    if cycles.empty or cycle is None:
+        return None
+
+    matches = pd.Series(True, index=cycles.index)
+    compared = False
+    for column in ("FirstSignalDate", "SecondSignalDate", "ThirdDecisionDate"):
+        if column not in cycles.columns or column not in cycle.index:
+            continue
+        target = pd.to_datetime(cycle.get(column), errors="coerce")
+        values = pd.to_datetime(cycles[column], errors="coerce")
+        if pd.isna(target):
+            matches &= values.isna()
+        else:
+            matches &= values.dt.normalize().eq(pd.Timestamp(target).normalize())
+        compared = True
+
+    if "Outcome" in cycles.columns and "Outcome" in cycle.index:
+        matches &= cycles["Outcome"].astype(str).eq(str(cycle.get("Outcome")))
+        compared = True
+    if not compared:
+        return None
+
+    positions = [
+        position
+        for position, matched in enumerate(matches.to_numpy(dtype=bool))
+        if matched
+    ]
+    return positions[-1] if positions else None
 
 
 def _sorted_frame(

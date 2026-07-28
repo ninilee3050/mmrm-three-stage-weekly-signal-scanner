@@ -41,6 +41,26 @@ MA_STYLES = {
     "MA_150": ("#9b1010", 3.2),
     "MA_200": ("#f00078", 3.6),
 }
+LIGHT_MA_COLOR_OVERRIDES = {
+    "MA_20": "#00e5ff",
+}
+DARK_MA_COLOR_OVERRIDES = {
+    "MA_150": "#c77832",
+}
+
+
+def moving_average_styles(theme_mode: str) -> dict[str, tuple[str, float]]:
+    """Return theme-aware MA colors while preserving periods and widths."""
+    styles = dict(MA_STYLES)
+    overrides = (
+        DARK_MA_COLOR_OVERRIDES
+        if normalize_theme(theme_mode) == "dark"
+        else LIGHT_MA_COLOR_OVERRIDES
+    )
+    for column, color in overrides.items():
+        _original_color, width = styles[column]
+        styles[column] = (color, width)
+    return styles
 
 
 def _blend_hex(foreground: str, background: str, opacity: float) -> str:
@@ -78,6 +98,37 @@ SIGNAL_STYLES = (
     ("2차", "SecondSignalDate", "#f59e0b"),
     ("3차", "ThirdDecisionDate", "#dc2626"),
 )
+
+RETURN_HORIZONS = (
+    ("3M", "Return3M", "Return3MStatus"),
+    ("6M", "Return6M", "Return6MStatus"),
+    ("9M", "Return9M", "Return9MStatus"),
+    ("12M", "Return12M", "Return12MStatus"),
+)
+
+
+def format_cycle_return(value, status) -> str:
+    """Format one stored forward return without recalculating it."""
+    if value is not None and not pd.isna(value):
+        try:
+            return f"{float(value):+.2f}%"
+        except (TypeError, ValueError):
+            return str(value)
+    if status is not None and not pd.isna(status):
+        status_text = str(status).strip()
+        if status_text:
+            return status_text
+    return "-"
+
+
+def cycle_return_summary(cycle: pd.Series | None) -> str:
+    """Build the compact 3/6/9/12-month result shown in the chart header."""
+    if cycle is None:
+        return ""
+    return " · ".join(
+        f"{label} {format_cycle_return(cycle.get(value_column), cycle.get(status_column))}"
+        for label, value_column, status_column in RETURN_HORIZONS
+    )
 
 
 @dataclass(frozen=True)
@@ -155,11 +206,13 @@ class ChartPreviewWindow(tk.Toplevel):
         self,
         master: tk.Misc,
         on_close=None,
+        on_navigate=None,
         theme_mode: str = "light",
     ) -> None:
         super().__init__(master)
         self.ui_font_family = configure_ui_fonts(self)
         self._on_close_callback = on_close
+        self._on_navigate_callback = on_navigate
         self.theme_mode = normalize_theme(theme_mode)
         self.palette = theme_palette(self.theme_mode)
         self.configure(background=self.palette["window"])
@@ -170,7 +223,10 @@ class ChartPreviewWindow(tk.Toplevel):
 
         self.status_var = tk.StringVar(value="차트 데이터를 준비해 주세요.")
         self.hover_var = tk.StringVar(
-            value="휠: 확대·축소  |  드래그: 좌우 이동  |  더블클릭: 선택 사이클 전체 보기"
+            value=(
+                "방향키 ←·→: 이전·다음 기록  |  휠: 확대·축소  |  "
+                "드래그: 좌우 이동  |  더블클릭: 선택 사이클 전체 보기"
+            )
         )
         self.header_frame = ttk.Frame(self)
         self.header_frame.pack(fill="x")
@@ -178,19 +234,33 @@ class ChartPreviewWindow(tk.Toplevel):
             self.header_frame,
             textvariable=self.status_var,
             font=(self.ui_font_family, 11, "bold"),
-            padding=(10, 7, 150, 2),
+            padding=(10, 7, 485, 2),
         ).pack(side="left", fill="x", expand=True)
+        self.previous_button = ttk.Button(
+            self.header_frame,
+            text="← 이전",
+            command=lambda: self._request_navigation(-1),
+            state="disabled",
+        )
+        self.navigation_var = tk.StringVar(value="- / -")
+        self.navigation_label = ttk.Label(
+            self.header_frame,
+            textvariable=self.navigation_var,
+            anchor="center",
+            width=8,
+        )
+        self.next_button = ttk.Button(
+            self.header_frame,
+            text="다음 →",
+            command=lambda: self._request_navigation(1),
+            state="disabled",
+        )
         self.benchmark_button = ttk.Button(
             self.header_frame,
             text="S&P 500 비교 열기",
             command=self._toggle_benchmark,
         )
-        self.benchmark_button.place(
-            relx=1.0,
-            x=-10,
-            y=6,
-            anchor="ne",
-        )
+        self._position_header_controls()
         ttk.Label(
             self,
             textvariable=self.hover_var,
@@ -244,6 +314,8 @@ class ChartPreviewWindow(tk.Toplevel):
         self.comparison_canvas.bind("<B1-Motion>", self._on_comparison_drag_motion)
         self.comparison_canvas.bind("<ButtonRelease-1>", self._on_drag_end)
         self.comparison_canvas.bind("<Double-Button-1>", self._reset_view)
+        self.bind("<Left>", lambda _event: self._request_navigation(-1))
+        self.bind("<Right>", lambda _event: self._request_navigation(1))
 
         self.ticker = ""
         self.company = ""
@@ -262,6 +334,42 @@ class ChartPreviewWindow(tk.Toplevel):
         self._state_before_benchmark = "normal"
         self._window_size_before_benchmark = (0, 0)
         self._window_position_before_benchmark = (0, 0)
+        self.navigation_index: int | None = None
+        self.navigation_total = 0
+
+    def _position_header_controls(self, fixed_right: int | None = None) -> None:
+        relx = 1.0 if fixed_right is None else 0.0
+        right = -10 if fixed_right is None else max(490, int(fixed_right) - 10)
+        common = {"relx": relx, "y": 6, "anchor": "ne"}
+        self.benchmark_button.place_configure(x=right, **common)
+        self.next_button.place_configure(x=right - 165, **common)
+        self.navigation_label.place_configure(x=right - 250, y=10, anchor="ne", relx=relx)
+        self.previous_button.place_configure(x=right - 330, **common)
+
+    def _request_navigation(self, direction: int) -> str:
+        if direction < 0 and str(self.previous_button.cget("state")) == "disabled":
+            return "break"
+        if direction > 0 and str(self.next_button.cget("state")) == "disabled":
+            return "break"
+        if self._on_navigate_callback is not None:
+            self._on_navigate_callback(-1 if direction < 0 else 1)
+        return "break"
+
+    def _set_navigation_state(self, index: int | None, total: int) -> None:
+        self.navigation_index = index
+        self.navigation_total = max(0, int(total))
+        if index is None or self.navigation_total <= 0:
+            self.navigation_var.set("- / -")
+            self.previous_button.configure(state="disabled")
+            self.next_button.configure(state="disabled")
+            return
+        current = min(self.navigation_total - 1, max(0, int(index)))
+        self.navigation_index = current
+        self.navigation_var.set(f"{current + 1} / {self.navigation_total}")
+        self.previous_button.configure(state="normal" if current > 0 else "disabled")
+        self.next_button.configure(
+            state="normal" if current < self.navigation_total - 1 else "disabled"
+        )
 
     def set_theme(self, mode: str) -> None:
         self.theme_mode = normalize_theme(mode)
@@ -299,12 +407,7 @@ class ChartPreviewWindow(tk.Toplevel):
         self._primary_width_before_benchmark = max(640, self.canvas.winfo_width())
         self._window_size_before_benchmark = (self.winfo_width(), self.winfo_height())
         self._window_position_before_benchmark = (self.winfo_x(), self.winfo_y())
-        self.benchmark_button.place_configure(
-            relx=0.0,
-            x=max(150, self._window_size_before_benchmark[0] - 10),
-            y=6,
-            anchor="ne",
-        )
+        self._position_header_controls(self._window_size_before_benchmark[0])
         if self._state_before_benchmark != "normal":
             self.state("normal")
             self.update_idletasks()
@@ -324,12 +427,7 @@ class ChartPreviewWindow(tk.Toplevel):
         self.comparison_frame.pack_forget()
         self.comparison_frame.pack_propagate(True)
         self.benchmark_button.configure(text="S&P 500 비교 열기", state="normal")
-        self.benchmark_button.place_configure(
-            relx=1.0,
-            x=-10,
-            y=6,
-            anchor="ne",
-        )
+        self._position_header_controls()
         self._clear_crosshair()
         if self._state_before_benchmark == "zoomed":
             try:
@@ -412,6 +510,8 @@ class ChartPreviewWindow(tk.Toplevel):
         data: pd.DataFrame,
         cycle: pd.Series | None,
         company: str = "",
+        navigation_index: int | None = None,
+        navigation_total: int = 0,
     ) -> None:
         missing = [column for column in CHART_COLUMNS if column not in data.columns]
         if missing:
@@ -435,11 +535,14 @@ class ChartPreviewWindow(tk.Toplevel):
         second = _date_text(cycle.get("SecondSignalDate")) if cycle is not None else "-"
         third = _date_text(cycle.get("ThirdDecisionDate")) if cycle is not None else "-"
         outcome = str(cycle.get("Outcome", "전체 차트")) if cycle is not None else "최근 3년"
+        returns = cycle_return_summary(cycle)
         name = f" · {company}" if company and company.upper() != self.ticker else ""
+        return_suffix = f"  |  {returns}" if returns else ""
         self.status_var.set(
             f"{self.ticker}{name}  |  1차 {first}  ·  2차 {second}  ·  "
-            f"3차 {third}  |  {outcome}"
+            f"3차 {third}  |  {outcome}{return_suffix}"
         )
+        self._set_navigation_state(navigation_index, navigation_total)
         self.title(f"{self.ticker} · MMRM 시나리오 차트 미리보기")
         self.deiconify()
         self.lift()
@@ -549,8 +652,9 @@ class ChartPreviewWindow(tk.Toplevel):
             )
 
     def _draw_price(self, panel: Panel, data: pd.DataFrame, xs: np.ndarray) -> None:
+        ma_styles = moving_average_styles(self.theme_mode)
         values = pd.concat(
-            [data[["Low", "High"]], data[list(MA_STYLES)]],
+            [data[["Low", "High"]], data[list(ma_styles)]],
             axis=1,
         ).to_numpy(dtype=float)
         low, high = _finite_range(values, padding=0.06)
@@ -562,7 +666,7 @@ class ChartPreviewWindow(tk.Toplevel):
 
         # Draw moving averages first so candle wicks and bodies remain fully visible
         # when a moving-average line crosses the same price area.
-        for column, (color, width) in MA_STYLES.items():
+        for column, (color, width) in ma_styles.items():
             self._draw_line(
                 xs,
                 data[column],
@@ -1204,6 +1308,7 @@ class ChartPreviewWindow(tk.Toplevel):
 
     def _draw_panel_hover_values(self, panels: list[Panel], row: pd.Series) -> None:
         self.canvas.delete("panel_hover_value")
+        ma_styles = moving_average_styles(self.theme_mode)
         price_values = [
             ("O", row["Open"], self.palette["muted"], False),
             ("H", row["High"], CANDLE_UP_COLOR, False),
@@ -1211,7 +1316,7 @@ class ChartPreviewWindow(tk.Toplevel):
             ("C", row["Close"], self.palette["text"], False),
             *[
                 (column.replace("MA_", "MA"), row[column], color, False)
-                for column, (color, _width) in MA_STYLES.items()
+                for column, (color, _width) in ma_styles.items()
             ],
         ]
         specifications = (

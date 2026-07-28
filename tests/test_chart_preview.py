@@ -10,8 +10,10 @@ from chart_preview import (
     CANDLE_DOWN_COLOR,
     CANDLE_UP_COLOR,
     CANDLE_WIDTH_RATIO,
+    DARK_MA_COLOR_OVERRIDES,
     INDICATOR_BAR_OPACITY,
     INDICATOR_BAR_WIDTH_RATIO,
+    LIGHT_MA_COLOR_OVERRIDES,
     MACD_SIGNAL_COLOR,
     MA_STYLES,
     NEGATIVE_BAR_COLOR,
@@ -23,11 +25,35 @@ from chart_preview import (
     VOLUME_MA_STYLE,
     ZOOM_IN_FACTOR,
     ZOOM_OUT_FACTOR,
+    ChartPreviewWindow,
     comparison_view_indices,
+    cycle_return_summary,
     cycle_view_dates,
     cycle_view_indices,
     expanded_comparison_width,
+    format_cycle_return,
+    moving_average_styles,
 )
+
+
+class _FakeVariable:
+    def __init__(self) -> None:
+        self.value = ""
+
+    def set(self, value: str) -> None:
+        self.value = value
+
+
+class _FakeButton:
+    def __init__(self) -> None:
+        self.state = "normal"
+
+    def configure(self, *, state: str) -> None:
+        self.state = state
+
+    def cget(self, option: str) -> str:
+        assert option == "state"
+        return self.state
 
 
 def test_sp500_is_the_single_comparison_benchmark() -> None:
@@ -52,6 +78,69 @@ def test_comparison_view_uses_the_stock_visible_date_range() -> None:
 
 def test_comparison_expands_to_the_right_without_shrinking_primary_chart() -> None:
     assert expanded_comparison_width(1600, 1440) == 3044
+
+
+def test_cycle_return_summary_uses_stored_returns_and_statuses() -> None:
+    cycle = pd.Series(
+        {
+            "Return3M": 12.345,
+            "Return3MStatus": "확정",
+            "Return6M": -4.5,
+            "Return6MStatus": "확정",
+            "Return9M": float("nan"),
+            "Return9MStatus": "진행 중",
+            "Return12M": float("nan"),
+            "Return12MStatus": "데이터 없음",
+        }
+    )
+
+    assert cycle_return_summary(cycle) == (
+        "3M +12.35% · 6M -4.50% · 9M 진행 중 · 12M 데이터 없음"
+    )
+    assert format_cycle_return(float("nan"), "해당 없음") == "해당 없음"
+    assert cycle_return_summary(None) == ""
+
+
+def test_navigation_state_disables_only_the_unavailable_direction() -> None:
+    window = object.__new__(ChartPreviewWindow)
+    window.navigation_var = _FakeVariable()
+    window.previous_button = _FakeButton()
+    window.next_button = _FakeButton()
+
+    ChartPreviewWindow._set_navigation_state(window, 0, 3)
+    assert window.navigation_var.value == "1 / 3"
+    assert window.previous_button.state == "disabled"
+    assert window.next_button.state == "normal"
+
+    ChartPreviewWindow._set_navigation_state(window, 1, 3)
+    assert window.navigation_var.value == "2 / 3"
+    assert window.previous_button.state == "normal"
+    assert window.next_button.state == "normal"
+
+    ChartPreviewWindow._set_navigation_state(window, 2, 3)
+    assert window.navigation_var.value == "3 / 3"
+    assert window.previous_button.state == "normal"
+    assert window.next_button.state == "disabled"
+
+
+def test_navigation_request_calls_back_without_wrapping() -> None:
+    calls: list[int] = []
+    window = object.__new__(ChartPreviewWindow)
+    window.previous_button = _FakeButton()
+    window.next_button = _FakeButton()
+    window._on_navigate_callback = calls.append
+
+    window.previous_button.state = "disabled"
+    assert ChartPreviewWindow._request_navigation(window, -1) == "break"
+    assert calls == []
+
+    window.previous_button.state = "normal"
+    assert ChartPreviewWindow._request_navigation(window, -1) == "break"
+    assert calls == [-1]
+
+    window.next_button.state = "normal"
+    assert ChartPreviewWindow._request_navigation(window, 1) == "break"
+    assert calls == [-1, 1]
 
 
 def test_chart_colors_and_oscillator_thresholds_match_the_reference() -> None:
@@ -84,6 +173,18 @@ def test_chart_colors_and_oscillator_thresholds_match_the_reference() -> None:
     assert MACD_SIGNAL_COLOR == MA_STYLES["MA_50"][0]
     assert VOLUME_MA_STYLE == MA_STYLES["MA_50"]
     assert OSCILLATOR_LINE_COLOR == CANDLE_UP_COLOR
+
+
+def test_theme_specific_ma_colors_keep_periods_and_widths() -> None:
+    light = moving_average_styles("light")
+    dark = moving_average_styles("dark")
+
+    assert light["MA_20"] == ("#00e5ff", 2.4)
+    assert dark["MA_20"] == ("#00d4d8", 2.4)
+    assert light["MA_150"] == ("#9b1010", 3.2)
+    assert dark["MA_150"] == ("#c77832", 3.2)
+    assert LIGHT_MA_COLOR_OVERRIDES == {"MA_20": "#00e5ff"}
+    assert DARK_MA_COLOR_OVERRIDES == {"MA_150": "#c77832"}
 
 
 def test_completed_cycle_view_includes_one_year_before_and_after() -> None:
