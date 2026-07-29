@@ -7,6 +7,7 @@ from chart_preview import (
     BENCHMARK_SIGNAL_OPACITY,
     BENCHMARK_SIGNAL_WIDTH,
     BENCHMARK_TICKER,
+    CANDLE_BODY_FILL,
     CANDLE_DOWN_COLOR,
     CANDLE_UP_COLOR,
     CANDLE_WIDTH_RATIO,
@@ -56,6 +57,18 @@ class _FakeButton:
     def cget(self, option: str) -> str:
         assert option == "state"
         return self.state
+
+
+class _RecordingCanvas:
+    def __init__(self) -> None:
+        self.lines: list[tuple[tuple[float, ...], dict[str, str]]] = []
+        self.rectangles: list[tuple[tuple[float, ...], dict[str, object]]] = []
+
+    def create_line(self, *coordinates: float, **options: str) -> None:
+        self.lines.append((coordinates, options))
+
+    def create_rectangle(self, *coordinates: float, **options: object) -> None:
+        self.rectangles.append((coordinates, options))
 
 
 def test_sp500_is_the_single_comparison_benchmark() -> None:
@@ -174,6 +187,7 @@ def test_chart_colors_and_oscillator_thresholds_match_the_reference() -> None:
     assert OSCILLATOR_LOWER == 30.0
     assert CANDLE_UP_COLOR == "#ef4444"
     assert CANDLE_DOWN_COLOR == "#2563eb"
+    assert CANDLE_BODY_FILL == ""
     assert INDICATOR_BAR_OPACITY == 0.5
     assert POSITIVE_BAR_COLOR == "#f7a2a2"
     assert NEGATIVE_BAR_COLOR == "#92b1f5"
@@ -198,6 +212,38 @@ def test_chart_colors_and_oscillator_thresholds_match_the_reference() -> None:
     assert MACD_SIGNAL_COLOR == MA_STYLES["MA_50"][0]
     assert VOLUME_MA_STYLE == MA_STYLES["MA_50"]
     assert OSCILLATOR_LINE_COLOR == CANDLE_UP_COLOR
+
+
+def test_hollow_candle_wicks_stop_at_the_body_edges() -> None:
+    window = object.__new__(ChartPreviewWindow)
+    window.canvas = _RecordingCanvas()
+    window.theme_mode = "dark"
+    window._plot_edges = lambda: (0.0, 100.0)
+    window._draw_scale = lambda *args, **kwargs: None
+    window._draw_line = lambda *args, **kwargs: None
+    data = pd.DataFrame(
+        {
+            "Open": [20.0],
+            "High": [30.0],
+            "Low": [10.0],
+            "Close": [25.0],
+            "MA_5": [22.0],
+            "MA_20": [21.0],
+            "MA_50": [19.0],
+            "MA_150": [18.0],
+            "MA_200": [17.0],
+        }
+    )
+    panel = Panel("price", 0.0, 100.0)
+
+    ChartPreviewWindow._draw_price(window, panel, data, pd.Series([50.0]).to_numpy())
+
+    body_coordinates, body_options = window.canvas.rectangles[0]
+    _, body_top, _, body_bottom = body_coordinates
+    upper_wick, lower_wick = [coordinates for coordinates, _ in window.canvas.lines]
+    assert upper_wick[3] == body_top
+    assert lower_wick[1] == body_bottom
+    assert body_options["fill"] == ""
 
 
 def test_theme_specific_ma_colors_keep_periods_and_widths() -> None:

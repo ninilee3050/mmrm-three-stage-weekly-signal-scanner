@@ -85,6 +85,7 @@ MACD_SIGNAL_COLOR = MA_STYLES["MA_50"][0]
 VOLUME_MA_STYLE = MA_STYLES["MA_50"]
 OSCILLATOR_LINE_COLOR = CANDLE_UP_COLOR
 CANDLE_WIDTH_RATIO = 0.76
+CANDLE_BODY_FILL = ""
 INDICATOR_BAR_WIDTH_RATIO = 0.84
 ZOOM_IN_FACTOR = 0.88
 ZOOM_OUT_FACTOR = 1.14
@@ -660,8 +661,8 @@ class ChartPreviewWindow(tk.Toplevel):
         step = (self._plot_edges()[1] - self._plot_edges()[0]) / max(1, len(data))
         candle_half = max(0.7, step * CANDLE_WIDTH_RATIO / 2)
 
-        # Draw moving averages first so candle wicks and bodies remain fully visible
-        # when a moving-average line crosses the same price area.
+        # Keep candles above the moving averages, but leave their bodies hollow so
+        # a moving-average line remains visible while passing through a candle.
         for column, (color, width) in ma_styles.items():
             self._draw_line(
                 xs,
@@ -677,18 +678,19 @@ class ChartPreviewWindow(tk.Toplevel):
                 continue
             rising = row["Close"] >= row["Open"]
             color = CANDLE_UP_COLOR if rising else CANDLE_DOWN_COLOR
-            self.canvas.create_line(x, y(row["High"]), x, y(row["Low"]), fill=color)
             top = y(max(row["Open"], row["Close"]))
             bottom = y(min(row["Open"], row["Close"]))
             if abs(bottom - top) < 1:
                 bottom = top + 1
+            self.canvas.create_line(x, y(row["High"]), x, top, fill=color)
+            self.canvas.create_line(x, bottom, x, y(row["Low"]), fill=color)
             self.canvas.create_rectangle(
                 x - candle_half,
                 top,
                 x + candle_half,
                 bottom,
                 outline=color,
-                fill=self.palette["chart_panel"],
+                fill=CANDLE_BODY_FILL,
                 tags=(
                     "candle_body",
                     "rising_candle" if rising else "falling_candle",
