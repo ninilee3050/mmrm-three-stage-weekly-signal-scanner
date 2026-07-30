@@ -9,6 +9,14 @@ from tkinter import messagebox, ttk
 
 import pandas as pd
 
+from chart_strength import (
+    ChartStrengthReferenceError,
+    annotate_completed_scenarios,
+    annotate_pending_scenarios,
+    annotate_scan_events,
+    chart_strength_detail_key,
+    load_chart_strength_reference,
+)
 from chart_preview import ChartPreviewWindow
 from data_provider import DataLoadError, load_weekly_data, normalize_ticker
 from indicators import calculate_indicators
@@ -39,6 +47,7 @@ from ui_theme import configure_ui_fonts, load_theme, save_theme, theme_palette
 OUTPUT_DIR = Path("outputs")
 DOWNLOADS_DIR = Path.home() / "Downloads"
 UI_SETTINGS_PATH = OUTPUT_DIR / "ui_settings.json"
+CLOSED_SCENARIO_PATH = OUTPUT_DIR / "mmrm_closed_scenarios.csv"
 SIGNAL_HISTORY_DISPLAY_COLUMNS = [
     "1차신호일",
     "2차신호일",
@@ -56,6 +65,10 @@ SCAN_EVENT_DISPLAY_COLUMNS = [
     "섹터",
     "단계",
     "신호일",
+    "차트 강도",
+    "검토등급",
+    "종목 3개월 승률",
+    "섹터 3개월 승률",
     "결과",
     "신호구분",
     "데이터기준일",
@@ -67,6 +80,10 @@ ACTIVE_SCENARIO_DISPLAY_COLUMNS = [
     "현재상태",
     "1차신호일",
     "2차신호일",
+    "차트 강도",
+    "검토등급",
+    "종목 3개월 승률",
+    "섹터 3개월 승률",
     "데이터기준일",
     "데이터상태",
 ]
@@ -78,8 +95,27 @@ CLOSED_RESULT_DISPLAY_COLUMNS = [
     "1차신호일",
     "2차신호일",
     "3차판정일",
+    "차트 강도",
+    "검토등급",
     "종료일",
 ]
+CLOSED_SCENARIO_DISPLAY_COLUMNS = [
+    "현재 시총순위",
+    "티커",
+    "회사명",
+    "섹터",
+    "1차신호일",
+    "2차신호일",
+    "3차판정일",
+    "결과",
+    "차트 강도",
+    "검토등급",
+    "3개월후 수익률",
+    "6개월후 수익률",
+    "9개월후 수익률",
+    "12개월후 수익률",
+]
+RETURN_DISPLAY_COLUMNS = SIGNAL_HISTORY_DISPLAY_COLUMNS[-4:]
 FIELD_DISPLAY_COLUMNS = [
     "분야",
     "종목 수",
@@ -104,6 +140,121 @@ RANKING_DISPLAY_COLUMNS = [
     "매수 도달률",
     "종합점수",
 ]
+
+
+class ChartStrengthTooltip:
+    """Small themed popup for one chart-strength table cell."""
+
+    def __init__(self, owner: tk.Misc, font_family: str) -> None:
+        self.owner = owner
+        self.font_family = font_family
+        self.window: tk.Toplevel | None = None
+
+    def show(
+        self,
+        x: int,
+        y: int,
+        detail: dict[str, object],
+        palette: dict[str, str],
+    ) -> None:
+        self.hide()
+        window = tk.Toplevel(self.owner)
+        window.wm_overrideredirect(True)
+        window.configure(background=palette["border"])
+        self.window = window
+
+        body = tk.Frame(window, background=palette["field"], padx=10, pady=9)
+        body.pack(padx=1, pady=1)
+        title = (
+            f"차트 강도 {detail.get('score_text', '계산 불가')}"
+            f" · {detail.get('grade', '확인 필요')}"
+        )
+        tk.Label(
+            body,
+            text=title,
+            background=palette["field"],
+            foreground=palette["text"],
+            font=(self.font_family, 10, "bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 7))
+
+        components = detail.get("components", [])
+        next_row = 1
+        if components:
+            for column, text in enumerate(("평가항목", "실제 값", "상대점수")):
+                tk.Label(
+                    body,
+                    text=text,
+                    background=palette["panel"],
+                    foreground=palette["muted"],
+                    font=(self.font_family, 9, "bold"),
+                    padx=5,
+                    pady=3,
+                ).grid(row=next_row, column=column, sticky="nsew")
+            next_row += 1
+            for component in components:
+                values = (
+                    str(component.get("label", "")),
+                    str(component.get("value_text", "")),
+                    str(component.get("score_text", "")),
+                )
+                for column, text in enumerate(values):
+                    tk.Label(
+                        body,
+                        text=text,
+                        background=palette["field"],
+                        foreground=palette["text"],
+                        font=(self.font_family, 9),
+                        padx=5,
+                        pady=2,
+                        anchor="e" if column else "w",
+                    ).grid(row=next_row, column=column, sticky="nsew")
+                next_row += 1
+
+        reasons = detail.get("reasons", [])
+        reason_text = "판단 이유\n" + "\n".join(f"• {reason}" for reason in reasons)
+        tk.Label(
+            body,
+            text=reason_text,
+            background=palette["field"],
+            foreground=palette["text"],
+            font=(self.font_family, 9),
+            justify="left",
+            anchor="w",
+            wraplength=470,
+        ).grid(row=next_row, column=0, columnspan=3, sticky="ew", pady=(8, 4))
+        next_row += 1
+
+        reference_count = int(detail.get("reference_count", 0) or 0)
+        footer = (
+            f"과거 확정 사례 {reference_count:,}건 기준\n"
+            f"{detail.get('note', '')}"
+        )
+        tk.Label(
+            body,
+            text=footer,
+            background=palette["field"],
+            foreground=palette["muted"],
+            font=(self.font_family, 8),
+            justify="left",
+            anchor="w",
+        ).grid(row=next_row, column=0, columnspan=3, sticky="ew", pady=(3, 0))
+
+        window.update_idletasks()
+        width = window.winfo_reqwidth()
+        height = window.winfo_reqheight()
+        screen_width = window.winfo_screenwidth()
+        screen_height = window.winfo_screenheight()
+        x = max(4, min(x, screen_width - width - 8))
+        y = max(4, min(y, screen_height - height - 8))
+        window.wm_geometry(f"+{x}+{y}")
+
+    def hide(self) -> None:
+        if self.window is not None:
+            try:
+                self.window.destroy()
+            except tk.TclError:
+                pass
+        self.window = None
 
 
 class BuyPointApp(tk.Tk):
@@ -133,8 +284,11 @@ class BuyPointApp(tk.Tk):
         self.field_status_var = tk.StringVar(value="통합 스캔 후 분야별 성과를 확인할 수 있습니다.")
         self.top100_companies: list[MarketCapCompany] = []
         self.latest_scan_events = pd.DataFrame(columns=SCAN_EVENT_COLUMNS)
-        self.latest_active_scenarios = load_active_scenarios()
+        self.latest_active_scenarios = annotate_pending_scenarios(
+            prioritize_active_scenarios(load_active_scenarios())
+        )
         self.latest_closed_results = pd.DataFrame(columns=CLOSED_RESULT_COLUMNS)
+        self.latest_closed_scenarios = load_closed_scenarios()
         self.latest_scan_failures = pd.DataFrame(columns=SCAN_FAILURE_COLUMNS)
         self.latest_scan_date: pd.Timestamp | None = None
         self.latest_classifications = pd.DataFrame()
@@ -149,15 +303,29 @@ class BuyPointApp(tk.Tk):
         self.current_chart_data = pd.DataFrame()
         self.current_signal_cycles = pd.DataFrame()
         self.chart_window: ChartPreviewWindow | None = None
+        self._syncing_chart_history_selection = False
         self.open_chart_after_search = False
+        self.pending_chart_first_signal_date: pd.Timestamp | None = None
+        self.chart_strength_tooltip = ChartStrengthTooltip(
+            self,
+            self.ui_font_family,
+        )
+        self.chart_strength_details: dict[
+            tuple[str, str], dict[str, object]
+        ] = {}
+        self._chart_strength_hover_item: tuple[str, str] | None = None
 
         self._build_layout()
-        populate_table(
-            self.active_tree,
-            scanner_table_for_display(
-                self.latest_active_scenarios,
-                ACTIVE_SCENARIO_DISPLAY_COLUMNS,
-            ),
+        active_display = scanner_table_for_display(
+            self.latest_active_scenarios,
+            ACTIVE_SCENARIO_DISPLAY_COLUMNS,
+        )
+        populate_table(self.active_tree, active_display)
+        self._apply_active_scenario_tags(active_display)
+        populate_table(self.closed_scenario_tree, self.latest_closed_scenarios)
+        self._apply_history_tags(
+            self.latest_closed_scenarios,
+            tree=self.closed_scenario_tree,
         )
 
     def _apply_theme(self) -> None:
@@ -169,6 +337,18 @@ class BuyPointApp(tk.Tk):
             "TLabel",
             background=palette["window"],
             foreground=palette["text"],
+        )
+        self.style.configure(
+            "ScanStatus.TLabel",
+            background=palette["window"],
+            foreground=palette["text"],
+        )
+        self.style.configure(
+            "ScanAlert.TLabel",
+            background=palette["signal_third_bg"],
+            foreground=palette["signal_third_text"],
+            font=(self.ui_font_family, 9, "bold"),
+            padding=(6, 5),
         )
         self.style.configure(
             "TLabelframe",
@@ -301,6 +481,18 @@ class BuyPointApp(tk.Tk):
 
         if hasattr(self, "theme_button"):
             self.theme_button.configure(text=self._theme_button_text())
+        tooltip = getattr(self, "chart_strength_tooltip", None)
+        if tooltip is not None:
+            tooltip.hide()
+            self._chart_strength_hover_item = None
+        for tree_name in ("scan_tree", "active_tree"):
+            tree = getattr(self, tree_name, None)
+            if tree is not None:
+                self._configure_signal_tree_tags(tree)
+        for tree_name in ("buy_tree", "closed_scenario_tree"):
+            tree = getattr(self, tree_name, None)
+            if tree is not None:
+                self._configure_history_tree_tags(tree)
         chart_window = getattr(self, "chart_window", None)
         if chart_window is not None and chart_window.winfo_exists():
             chart_window.set_theme(self.theme_mode)
@@ -322,6 +514,7 @@ class BuyPointApp(tk.Tk):
                 SCAN_EVENT_DISPLAY_COLUMNS,
                 ACTIVE_SCENARIO_DISPLAY_COLUMNS,
                 CLOSED_RESULT_DISPLAY_COLUMNS,
+                CLOSED_SCENARIO_DISPLAY_COLUMNS,
                 FIELD_DISPLAY_COLUMNS,
                 RANKING_DISPLAY_COLUMNS,
                 SCAN_FAILURE_COLUMNS,
@@ -439,6 +632,7 @@ class BuyPointApp(tk.Tk):
         )
         table_frame.grid(row=3, column=0, sticky="nsew")
         self.buy_tree = self._create_table(table_frame)
+        self._configure_history_tree_tags()
         populate_table(self.buy_tree, pd.DataFrame(columns=SIGNAL_HISTORY_DISPLAY_COLUMNS))
         self.buy_tree.bind("<<TreeviewSelect>>", self._on_history_select)
         self.buy_tree.bind("<Double-1>", self._on_history_double_click)
@@ -475,13 +669,14 @@ class BuyPointApp(tk.Tk):
         )
         self.scan_save_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        scan_status = ttk.Label(
+        self.scan_status_label = ttk.Label(
             scanner_panel,
             textvariable=self.scan_status_var,
             wraplength=scanner_panel_width - 40,
             padding=(0, 6, 0, 6),
+            style="ScanStatus.TLabel",
         )
-        scan_status.grid(row=1, column=0, sticky="ew")
+        self.scan_status_label.grid(row=1, column=0, sticky="ew")
 
         self.scan_notebook = ttk.Notebook(scanner_panel)
         self.scan_notebook.grid(row=2, column=0, sticky="nsew")
@@ -489,23 +684,33 @@ class BuyPointApp(tk.Tk):
         event_tab = ttk.Frame(self.scan_notebook)
         active_tab = ttk.Frame(self.scan_notebook)
         closed_tab = ttk.Frame(self.scan_notebook)
+        closed_scenario_tab = ttk.Frame(self.scan_notebook)
         field_tab = ttk.Frame(self.scan_notebook)
         failure_tab = ttk.Frame(self.scan_notebook)
         self.scan_notebook.add(event_tab, text="이번 스캔 신호")
         self.scan_notebook.add(active_tab, text="활성 시나리오")
         self.scan_notebook.add(closed_tab, text="이번 스캔 종료")
+        self.scan_notebook.add(closed_scenario_tab, text="종료 시나리오")
         self.scan_notebook.add(field_tab, text="분야별 성과")
         self.scan_notebook.add(failure_tab, text="오류")
 
         self.scan_tree = self._create_table(event_tab)
         self.active_tree = self._create_table(active_tab)
+        self._configure_signal_tree_tags(self.scan_tree)
+        self._configure_signal_tree_tags(self.active_tree)
         self.closed_tree = self._create_table(closed_tab)
+        self.closed_scenario_tree = self._create_table(closed_scenario_tab)
+        self._configure_history_tree_tags(self.closed_scenario_tree)
         self._build_field_performance_tab(field_tab)
         self.failure_tree = self._create_table(failure_tab)
 
         populate_table(self.scan_tree, pd.DataFrame(columns=SCAN_EVENT_DISPLAY_COLUMNS))
         populate_table(self.active_tree, pd.DataFrame(columns=ACTIVE_SCENARIO_DISPLAY_COLUMNS))
         populate_table(self.closed_tree, pd.DataFrame(columns=CLOSED_RESULT_DISPLAY_COLUMNS))
+        populate_table(
+            self.closed_scenario_tree,
+            pd.DataFrame(columns=CLOSED_SCENARIO_DISPLAY_COLUMNS),
+        )
         populate_table(self.field_tree, pd.DataFrame(columns=FIELD_DISPLAY_COLUMNS))
         populate_table(self.ranking_tree, pd.DataFrame(columns=RANKING_DISPLAY_COLUMNS))
         populate_table(self.failure_tree, pd.DataFrame(columns=SCAN_FAILURE_COLUMNS))
@@ -514,6 +719,13 @@ class BuyPointApp(tk.Tk):
             "<<TreeviewSelect>>",
             lambda event: self._on_scan_row_select(event, self.scan_tree),
         )
+        self._bind_chart_strength_tooltip(self.scan_tree, "신호일")
+        self._bind_chart_strength_tooltip(self.active_tree, "2차신호일")
+        self._bind_chart_strength_tooltip(self.closed_tree, "3차판정일")
+        self._bind_chart_strength_tooltip(
+            self.closed_scenario_tree,
+            "3차판정일",
+        )
         self.active_tree.bind(
             "<<TreeviewSelect>>",
             lambda event: self._on_scan_row_select(event, self.active_tree),
@@ -521,6 +733,14 @@ class BuyPointApp(tk.Tk):
         self.closed_tree.bind(
             "<<TreeviewSelect>>",
             lambda event: self._on_scan_row_select(event, self.closed_tree),
+        )
+        self.closed_scenario_tree.bind(
+            "<<TreeviewSelect>>",
+            self._on_closed_scenario_select,
+        )
+        self.closed_scenario_tree.bind(
+            "<Double-1>",
+            self._on_closed_scenario_double_click,
         )
         self.ranking_tree.bind(
             "<<TreeviewSelect>>",
@@ -535,6 +755,136 @@ class BuyPointApp(tk.Tk):
                     "티커",
                 ),
             )
+
+    def _configure_signal_tree_tags(self, tree: ttk.Treeview) -> None:
+        palette = theme_palette(self.theme_mode)
+        tree.tag_configure(
+            "signal_first",
+            background=palette["signal_first_bg"],
+            foreground=palette["signal_first_text"],
+        )
+        tree.tag_configure(
+            "signal_second",
+            background=palette["signal_second_bg"],
+            foreground=palette["signal_second_text"],
+        )
+        tree.tag_configure(
+            "signal_third",
+            background=palette["signal_third_bg"],
+            foreground=palette["signal_third_text"],
+            font=(self.ui_font_family, 9, "bold"),
+        )
+
+    def _apply_scan_event_tags(self, data: pd.DataFrame) -> None:
+        for item, (_, row) in zip(self.scan_tree.get_children(), data.iterrows()):
+            tag = scan_event_tag(row.get("단계"), row.get("결과"))
+            self.scan_tree.item(item, tags=(tag,) if tag else ())
+
+    def _bind_chart_strength_tooltip(
+        self,
+        tree: ttk.Treeview,
+        signal_date_column: str,
+    ) -> None:
+        tree.bind(
+            "<Motion>",
+            lambda event, source=tree, date_column=signal_date_column: (
+                self._on_chart_strength_motion(event, source, date_column)
+            ),
+            add="+",
+        )
+        for sequence in ("<Leave>", "<ButtonPress>", "<MouseWheel>"):
+            tree.bind(sequence, self._hide_chart_strength_tooltip, add="+")
+
+    def _on_chart_strength_motion(
+        self,
+        event,
+        tree: ttk.Treeview,
+        signal_date_column: str,
+    ) -> None:
+        item = tree.identify_row(event.y)
+        column_id = tree.identify_column(event.x)
+        if not item or not column_id or tree.identify_region(event.x, event.y) != "cell":
+            self._hide_chart_strength_tooltip()
+            return
+
+        try:
+            column_index = int(column_id.removeprefix("#")) - 1
+            column_name = tree["columns"][column_index]
+        except (ValueError, IndexError, tk.TclError):
+            self._hide_chart_strength_tooltip()
+            return
+        if column_name != "차트 강도":
+            self._hide_chart_strength_tooltip()
+            return
+
+        ticker = tree.set(item, "티커")
+        signal_date = tree.set(item, signal_date_column)
+        detail = self.chart_strength_details.get(
+            chart_strength_detail_key(ticker, signal_date)
+        )
+        if detail is None:
+            self._hide_chart_strength_tooltip()
+            return
+        hover_item = (str(tree), item)
+        if (
+            self._chart_strength_hover_item == hover_item
+            and self.chart_strength_tooltip.window
+        ):
+            return
+
+        self._chart_strength_hover_item = hover_item
+        self.chart_strength_tooltip.show(
+            tree.winfo_rootx() + event.x + 14,
+            tree.winfo_rooty() + event.y + 18,
+            detail,
+            theme_palette(self.theme_mode),
+        )
+
+    def _hide_chart_strength_tooltip(self, _event=None) -> None:
+        self.chart_strength_tooltip.hide()
+        self._chart_strength_hover_item = None
+
+    def _apply_active_scenario_tags(self, data: pd.DataFrame) -> None:
+        for item, (_, row) in zip(self.active_tree.get_children(), data.iterrows()):
+            tag = active_scenario_tag(row.get("현재상태"))
+            self.active_tree.item(item, tags=(tag,) if tag else ())
+
+    def _configure_history_tree_tags(self, tree: ttk.Treeview | None = None) -> None:
+        tree = tree or self.buy_tree
+        palette = theme_palette(self.theme_mode)
+        tag_colors = {
+            "history_discard": "history_discard_bg",
+            "history_failure": "history_failure_bg",
+            "history_success_pending": "history_success_pending_bg",
+            "history_success_low": "history_success_low_bg",
+            "history_success_medium": "history_success_medium_bg",
+            "history_success_high": "history_success_high_bg",
+            "history_loss_low": "history_loss_low_bg",
+            "history_loss_medium": "history_loss_medium_bg",
+            "history_loss_high": "history_loss_high_bg",
+            "history_flat": "history_flat_bg",
+        }
+        for tag, color_key in tag_colors.items():
+            options: dict[str, object] = {"background": palette[color_key]}
+            if tag == "history_success_high":
+                options["font"] = (self.ui_font_family, 9, "bold")
+            tree.tag_configure(tag, **options)
+
+    def _apply_history_tags(
+        self,
+        data: pd.DataFrame,
+        tree: ttk.Treeview | None = None,
+    ) -> None:
+        tree = tree or self.buy_tree
+        for item, (_, row) in zip(tree.get_children(), data.iterrows()):
+            tag = history_cycle_tag(
+                row.get("결과"),
+                row.get("3개월후 수익률"),
+                row.get("6개월후 수익률"),
+                row.get("9개월후 수익률"),
+                row.get("12개월후 수익률"),
+            )
+            tree.item(item, tags=(tag,) if tag else ())
 
     def _create_table(self, parent: tk.Widget) -> ttk.Treeview:
         frame = ttk.Frame(parent)
@@ -678,6 +1028,7 @@ class BuyPointApp(tk.Tk):
         ticker = self.top100_tree.set(selected[0], "ticker")
         if not ticker:
             return
+        self.pending_chart_first_signal_date = None
         self.ticker_var.set(ticker)
         self.run_search()
 
@@ -688,6 +1039,7 @@ class BuyPointApp(tk.Tk):
         self.scan_button.configure(state="disabled")
         self.scan_save_button.configure(state="disabled")
         self.top100_button.configure(state="disabled")
+        self.scan_status_label.configure(style="ScanStatus.TLabel")
         self.scan_status_var.set("Top 100과 활성 시나리오를 통합 스캔하는 중입니다...")
         self.scan_tree.delete(*self.scan_tree.get_children())
         self.closed_tree.delete(*self.closed_tree.get_children())
@@ -700,6 +1052,8 @@ class BuyPointApp(tk.Tk):
         self.latest_scan_date = None
         self.latest_classifications = pd.DataFrame()
         self.latest_cycles_by_ticker = {}
+        self.chart_strength_details = {}
+        self._hide_chart_strength_tooltip()
         self.latest_analysis_companies = []
         self.selected_field = None
         self.field_status_var.set("가격 데이터와 시나리오 성과를 계산하는 중입니다...")
@@ -726,7 +1080,14 @@ class BuyPointApp(tk.Tk):
 
             scan_date = pd.Timestamp.today().normalize()
             scan_universe = merge_scan_universe(companies, previous_active)
-            events, active_rows, closed_results, failures, cycles_by_ticker = self._scan_companies(
+            (
+                events,
+                active_rows,
+                closed_results,
+                failures,
+                cycles_by_ticker,
+                full_tables_by_ticker,
+            ) = self._scan_companies(
                 scan_universe,
                 scan_date,
                 previous_active,
@@ -742,6 +1103,7 @@ class BuyPointApp(tk.Tk):
                     retry_closed,
                     retry_failures,
                     retry_cycles,
+                    retry_full_tables,
                 ) = self._scan_companies(
                     retry_companies,
                     scan_date,
@@ -752,6 +1114,7 @@ class BuyPointApp(tk.Tk):
                 active_rows.extend(retry_active)
                 closed_results.extend(retry_closed)
                 cycles_by_ticker.update(retry_cycles)
+                full_tables_by_ticker.update(retry_full_tables)
                 failures = retry_failures
 
             failed_tickers = {
@@ -768,12 +1131,27 @@ class BuyPointApp(tk.Tk):
                 by=["신호일", "순위"],
                 ascending=[False, True],
             )
+            try:
+                chart_strength_reference = load_chart_strength_reference()
+                reference_error = None
+            except ChartStrengthReferenceError as exc:
+                chart_strength_reference = None
+                reference_error = str(exc)
+            events_df, chart_strength_details = annotate_scan_events(
+                events_df,
+                full_tables_by_ticker,
+                chart_strength_reference,
+                reference_error=reference_error,
+            )
+            events_df = prioritize_scan_events(events_df)
             active_df = _sorted_frame(
                 active_rows,
                 ACTIVE_SCENARIO_COLUMNS,
                 by=["순위", "티커"],
                 ascending=[True, True],
             ).drop_duplicates(subset=["티커"], keep="last")
+            active_df = prioritize_active_scenarios(active_df)
+            active_df = annotate_pending_scenarios(active_df)
             closed_df = _sorted_frame(
                 closed_results,
                 CLOSED_RESULT_COLUMNS,
@@ -797,14 +1175,54 @@ class BuyPointApp(tk.Tk):
             events_df = add_sector_column(events_df, classifications)
             active_df = add_sector_column(active_df, classifications)
             closed_df = add_sector_column(closed_df, classifications)
+            closed_scenarios_df = build_closed_scenario_history(
+                companies,
+                cycles_by_ticker,
+                classifications,
+                previous=self.latest_closed_scenarios,
+                failed_tickers=failed_tickers,
+            )
+            closed_df, closed_chart_strength_details = (
+                annotate_completed_scenarios(
+                    closed_df,
+                    full_tables_by_ticker,
+                    chart_strength_reference,
+                    reference_error=reference_error,
+                )
+            )
+            closed_scenarios_df, history_chart_strength_details = (
+                annotate_completed_scenarios(
+                    closed_scenarios_df,
+                    full_tables_by_ticker,
+                    chart_strength_reference,
+                    reference_error=reference_error,
+                )
+            )
+            chart_strength_details.update(closed_chart_strength_details)
+            chart_strength_details.update(history_chart_strength_details)
 
             sector_output, industry_output, ranking_output = build_all_field_outputs(
                 companies,
                 cycles_by_ticker,
                 classifications,
             )
+            events_df = add_scan_performance_columns(
+                events_df,
+                companies,
+                cycles_by_ticker,
+                classifications,
+                sector_output,
+            )
+            active_df = add_scan_performance_columns(
+                active_df,
+                companies,
+                cycles_by_ticker,
+                classifications,
+                sector_output,
+            )
             save_analytics_outputs(sector_output, industry_output, ranking_output)
             save_active_scenarios(active_df)
+            save_closed_scenarios(closed_scenarios_df)
         except Exception as exc:
             self.after(0, self._show_scan_error, exc)
             return
@@ -813,8 +1231,10 @@ class BuyPointApp(tk.Tk):
             0,
             self._show_scan_result,
             events_df,
+            chart_strength_details,
             active_df,
             closed_df,
+            closed_scenarios_df,
             failures_df,
             scan_date,
             companies,
@@ -841,12 +1261,14 @@ class BuyPointApp(tk.Tk):
         list[dict[str, object]],
         list[dict[str, object]],
         dict[str, pd.DataFrame],
+        dict[str, pd.DataFrame],
     ]:
         events: list[dict[str, object]] = []
         active_rows: list[dict[str, object]] = []
         closed_results: list[dict[str, object]] = []
         failures: list[dict[str, object]] = []
         cycles_by_ticker: dict[str, pd.DataFrame] = {}
+        full_tables_by_ticker: dict[str, pd.DataFrame] = {}
         total = len(companies)
         previous_by_ticker = {
             str(row["티커"]).upper(): row
@@ -868,6 +1290,7 @@ class BuyPointApp(tk.Tk):
                 calculated = calculate_indicators(raw_data)
                 cycles, full_table = scan_signal_cycles(calculated)
                 cycles_by_ticker[company.ticker.upper()] = cycles.copy()
+                full_tables_by_ticker[company.ticker.upper()] = full_table.copy()
                 ticker_events, active_row, ticker_closed = summarize_ticker_cycles(
                     company,
                     cycles,
@@ -882,13 +1305,22 @@ class BuyPointApp(tk.Tk):
             except Exception as exc:
                 failures.append({"company": company, "error": str(exc)})
 
-        return events, active_rows, closed_results, failures, cycles_by_ticker
+        return (
+            events,
+            active_rows,
+            closed_results,
+            failures,
+            cycles_by_ticker,
+            full_tables_by_ticker,
+        )
 
     def _show_scan_result(
         self,
         events: pd.DataFrame,
+        chart_strength_details: dict[tuple[str, str], dict[str, object]],
         active_scenarios: pd.DataFrame,
         closed_results: pd.DataFrame,
+        closed_scenarios: pd.DataFrame,
         failures: pd.DataFrame,
         scan_date: pd.Timestamp,
         analysis_companies: list[MarketCapCompany],
@@ -899,8 +1331,10 @@ class BuyPointApp(tk.Tk):
         ranking_output: pd.DataFrame,
     ) -> None:
         self.latest_scan_events = events.copy()
+        self.chart_strength_details = dict(chart_strength_details)
         self.latest_active_scenarios = active_scenarios.copy()
         self.latest_closed_results = closed_results.copy()
+        self.latest_closed_scenarios = closed_scenarios.copy()
         self.latest_scan_failures = failures.copy()
         self.latest_scan_date = scan_date
         self.latest_analysis_companies = list(analysis_companies)
@@ -912,21 +1346,21 @@ class BuyPointApp(tk.Tk):
         self.latest_sector_performance = sector_output.copy()
         self.latest_industry_performance = industry_output.copy()
         self.latest_field_rankings = ranking_output.copy()
-        populate_table(
-            self.scan_tree,
-            scanner_table_for_display(events, SCAN_EVENT_DISPLAY_COLUMNS),
+        scan_display = scanner_table_for_display(events, SCAN_EVENT_DISPLAY_COLUMNS)
+        populate_table(self.scan_tree, scan_display)
+        self._apply_scan_event_tags(scan_display)
+        active_display = scanner_table_for_display(
+            active_scenarios,
+            ACTIVE_SCENARIO_DISPLAY_COLUMNS,
         )
-        populate_table(
-            self.active_tree,
-            scanner_table_for_display(
-                active_scenarios,
-                ACTIVE_SCENARIO_DISPLAY_COLUMNS,
-            ),
-        )
+        populate_table(self.active_tree, active_display)
+        self._apply_active_scenario_tags(active_display)
         populate_table(
             self.closed_tree,
             scanner_table_for_display(closed_results, CLOSED_RESULT_DISPLAY_COLUMNS),
         )
+        populate_table(self.closed_scenario_tree, closed_scenarios)
+        self._apply_history_tags(closed_scenarios, tree=self.closed_scenario_tree)
         populate_table(self.failure_tree, failures)
         self._refresh_field_analytics(reset_selection=True)
 
@@ -943,16 +1377,38 @@ class BuyPointApp(tk.Tk):
         third_count = int(
             ((events["단계"] == "3차 신호") & (events["결과"] == "매수 성공")).sum()
         ) if not events.empty else 0
+        priority_review_count = int(
+            (events.get("검토등급") == "우선검토").sum()
+        ) if not events.empty and "검토등급" in events.columns else 0
+        general_review_count = int(
+            (events.get("검토등급") == "일반검토").sum()
+        ) if not events.empty and "검토등급" in events.columns else 0
         failed_signal_count = int(
             ((events["단계"] == "3차 신호") & (events["결과"] == "실패")).sum()
         ) if not events.empty else 0
         self.scan_status_var.set(
-            f"스캔 완료: 신규 1차 {first_count}개 / 2차 {second_count}개 / "
-            f"2차 폐기 {second_rejection_count}개 / 3차 매수 {third_count}개 / "
+            f"스캔 완료 | 즉시 확인: 3차 신호 {third_count}개 "
+            f"(우선검토 {priority_review_count}개 / 일반검토 {general_review_count}개) / "
+            f"출발 준비: 2차 신호 {second_count}개 / 관심 편입: 1차 신호 {first_count}개 / "
+            f"2차 폐기 {second_rejection_count}개 / "
             f"신호 실패 {failed_signal_count}개 / "
             f"계속 관찰 {len(active_scenarios)}개 / 데이터 오류 {len(failures)}개{failed_suffix}. "
             f"필요하면 스캔 저장하기를 눌러 CSV로 저장하세요."
         )
+        self.scan_status_label.configure(
+            style="ScanAlert.TLabel" if third_count > 0 else "ScanStatus.TLabel"
+        )
+        if third_count > 0:
+            self.scan_notebook.select(0)
+            third_items = [
+                item
+                for item in self.scan_tree.get_children()
+                if self.scan_tree.set(item, "단계") == "3차 신호"
+                and self.scan_tree.set(item, "결과") == "매수 성공"
+            ]
+            if third_items:
+                self.scan_tree.focus(third_items[0])
+                self.scan_tree.see(third_items[0])
         self.scan_button.configure(state="normal")
         self.scan_save_button.configure(state="normal")
         self.top100_button.configure(state="normal")
@@ -964,6 +1420,7 @@ class BuyPointApp(tk.Tk):
             message = f"Top 100 스캔 중 오류가 발생했습니다: {exc}"
 
         self.scan_status_var.set(message)
+        self.scan_status_label.configure(style="ScanStatus.TLabel")
         self.scan_button.configure(state="normal")
         self.scan_save_button.configure(state="disabled")
         self.top100_button.configure(state="normal")
@@ -988,6 +1445,13 @@ class BuyPointApp(tk.Tk):
             output_dir=DOWNLOADS_DIR,
             date_suffix=self.latest_scan_date.strftime("%Y-%m-%d"),
         )
+        saved_paths += (
+            save_closed_scenarios(
+                self.latest_closed_scenarios,
+                DOWNLOADS_DIR
+                / f"MMRM_closed_scenarios_{self.latest_scan_date:%Y-%m-%d}.csv",
+            ),
+        )
         self.scan_status_var.set(
             "스캔 결과 저장 완료: " + " / ".join(str(path) for path in saved_paths)
         )
@@ -999,8 +1463,50 @@ class BuyPointApp(tk.Tk):
         ticker = tree.set(selected[0], "티커")
         if not ticker:
             return
+        self.pending_chart_first_signal_date = None
         self.ticker_var.set(ticker)
         self.run_search()
+
+    def _on_closed_scenario_select(self, _event=None) -> None:
+        selected = self.closed_scenario_tree.selection()
+        if not selected:
+            return
+        item = selected[0]
+        ticker = self.closed_scenario_tree.set(item, "티커")
+        first_signal_date = self.closed_scenario_tree.set(item, "1차신호일")
+        if not ticker or not first_signal_date:
+            return
+        self.pending_chart_first_signal_date = pd.Timestamp(first_signal_date)
+        self.ticker_var.set(ticker)
+        if self.current_ticker == ticker.upper() and not self.current_chart_data.empty:
+            if self._chart_is_open():
+                self._show_chart(
+                    self._cycle_for_first_signal_date(
+                        self.pending_chart_first_signal_date
+                    )
+                )
+            return
+        self.run_search()
+
+    def _on_closed_scenario_double_click(self, event) -> None:
+        item = self.closed_scenario_tree.identify_row(event.y)
+        if not item:
+            return
+        self.closed_scenario_tree.selection_set(item)
+        ticker = self.closed_scenario_tree.set(item, "티커")
+        first_signal_date = self.closed_scenario_tree.set(item, "1차신호일")
+        if not ticker or not first_signal_date:
+            return
+
+        self.pending_chart_first_signal_date = pd.Timestamp(first_signal_date)
+        self.open_chart_after_search = True
+        if self.current_ticker == ticker.upper() and not self.current_chart_data.empty:
+            cycle = self._cycle_for_first_signal_date(
+                self.pending_chart_first_signal_date
+            )
+            self._show_chart(cycle)
+            self.open_chart_after_search = False
+            self.pending_chart_first_signal_date = None
 
     def _on_ticker_double_click(
         self,
@@ -1016,6 +1522,7 @@ class BuyPointApp(tk.Tk):
         if not ticker:
             return
 
+        self.pending_chart_first_signal_date = None
         self.open_chart_after_search = True
         if (
             self.current_ticker == ticker.upper()
@@ -1036,7 +1543,18 @@ class BuyPointApp(tk.Tk):
         self._show_selected_history_cycle(open_window=True)
 
     def _on_history_select(self, _event=None) -> None:
+        if self._syncing_chart_history_selection:
+            return
         if self._chart_is_open():
+            selected = self.buy_tree.selection()
+            if selected:
+                selected_position = self.buy_tree.index(selected[0])
+                chart_position = signal_cycle_position(
+                    self.current_signal_cycles,
+                    self.chart_window.cycle,
+                )
+                if selected_position == chart_position:
+                    return
             self._show_selected_history_cycle(open_window=False)
 
     def _show_selected_history_cycle(self, open_window: bool) -> None:
@@ -1054,13 +1572,32 @@ class BuyPointApp(tk.Tk):
             return None
         return self.current_signal_cycles.iloc[-1]
 
+    def _cycle_for_first_signal_date(
+        self,
+        first_signal_date: pd.Timestamp | None,
+    ) -> pd.Series | None:
+        if first_signal_date is None or self.current_signal_cycles.empty:
+            return None
+        dates = pd.to_datetime(
+            self.current_signal_cycles["FirstSignalDate"],
+            errors="coerce",
+        ).dt.normalize()
+        matches = self.current_signal_cycles.loc[
+            dates.eq(pd.Timestamp(first_signal_date).normalize())
+        ]
+        if matches.empty:
+            return None
+        return matches.iloc[-1]
+
     def _show_chart(self, cycle: pd.Series | None) -> None:
         if not self.current_ticker or self.current_chart_data.empty:
             return
+        position = signal_cycle_position(self.current_signal_cycles, cycle)
         if not self._chart_is_open():
             self.chart_window = ChartPreviewWindow(
                 self,
                 on_close=self._on_chart_closed,
+                on_navigate=self._navigate_chart_history,
                 theme_mode=self.theme_mode,
             )
         try:
@@ -1069,9 +1606,43 @@ class BuyPointApp(tk.Tk):
                 self.current_chart_data,
                 cycle,
                 company=self.current_company,
+                navigation_index=position,
+                navigation_total=len(self.current_signal_cycles),
             )
+            if position is not None:
+                self._select_history_position(position)
         except ValueError as exc:
             messagebox.showerror("차트 미리보기 오류", str(exc))
+
+    def _navigate_chart_history(self, direction: int) -> None:
+        if self.current_signal_cycles.empty or not self._chart_is_open():
+            return
+        current = signal_cycle_position(
+            self.current_signal_cycles,
+            self.chart_window.cycle,
+        )
+        if current is None:
+            current = len(self.current_signal_cycles) - 1
+        target = min(
+            len(self.current_signal_cycles) - 1,
+            max(0, current + (-1 if direction < 0 else 1)),
+        )
+        if target == current:
+            return
+        self._show_chart(self.current_signal_cycles.iloc[target])
+
+    def _select_history_position(self, position: int) -> None:
+        children = self.buy_tree.get_children()
+        if position < 0 or position >= len(children):
+            return
+        item = children[position]
+        self._syncing_chart_history_selection = True
+        try:
+            self.buy_tree.selection_set(item)
+            self.buy_tree.focus(item)
+            self.buy_tree.see(item)
+        finally:
+            self._syncing_chart_history_selection = False
 
     def _chart_is_open(self) -> bool:
         if self.chart_window is None:
@@ -1244,7 +1815,9 @@ class BuyPointApp(tk.Tk):
         self.current_company = company.company
         self.current_chart_data = full_table.copy()
         self.current_signal_cycles = signal_cycles.reset_index(drop=True).copy()
-        populate_table(self.buy_tree, signal_cycles_for_display(signal_cycles))
+        history_display = signal_cycles_for_display(signal_cycles)
+        populate_table(self.buy_tree, history_display)
+        self._apply_history_tags(history_display)
 
         count = len(signal_cycles)
         self.status_var.set(
@@ -1276,15 +1849,27 @@ class BuyPointApp(tk.Tk):
         self.ticker_return_summary_var.set("  |  ".join(horizon_text))
         self.search_button.configure(state="normal")
 
+        target_cycle = self._cycle_for_first_signal_date(
+            self.pending_chart_first_signal_date
+        )
+        if target_cycle is None:
+            target_cycle = self._latest_cycle()
+
         if self._chart_is_open() or self.open_chart_after_search:
             children = self.buy_tree.get_children()
-            if children:
-                latest_item = children[-1]
-                self.buy_tree.selection_set(latest_item)
-                self.buy_tree.focus(latest_item)
-                self.buy_tree.see(latest_item)
-            self._show_chart(self._latest_cycle())
+            target_position = (
+                int(target_cycle.name)
+                if target_cycle is not None and isinstance(target_cycle.name, int)
+                else len(children) - 1
+            )
+            if children and 0 <= target_position < len(children):
+                target_item = children[target_position]
+                self.buy_tree.selection_set(target_item)
+                self.buy_tree.focus(target_item)
+                self.buy_tree.see(target_item)
+            self._show_chart(target_cycle)
         self.open_chart_after_search = False
+        self.pending_chart_first_signal_date = None
 
     def _show_error(self, ticker: str, exc: Exception) -> None:
         if isinstance(exc, DataLoadError):
@@ -1298,6 +1883,7 @@ class BuyPointApp(tk.Tk):
         self.ticker_return_summary_var.set("")
         self.search_button.configure(state="normal")
         self.open_chart_after_search = False
+        self.pending_chart_first_signal_date = None
         messagebox.showerror("오류", message)
 
 
@@ -1337,6 +1923,52 @@ def save_signal_outputs(
     )
     full_table.to_csv(full_path, index_label="Date", encoding="utf-8-sig")
     return signal_path, full_path
+
+
+def load_closed_scenarios(
+    path: Path | str = CLOSED_SCENARIO_PATH,
+) -> pd.DataFrame:
+    path = Path(path)
+    if not path.exists():
+        return pd.DataFrame(columns=CLOSED_SCENARIO_DISPLAY_COLUMNS)
+
+    data = pd.read_csv(path)
+    if "현재 시총순위" not in data.columns and "순위" in data.columns:
+        data = data.rename(columns={"순위": "현재 시총순위"})
+    data = data.reindex(columns=CLOSED_SCENARIO_DISPLAY_COLUMNS)
+    for column in ("1차신호일", "2차신호일", "3차판정일"):
+        data[column] = pd.to_datetime(data[column], errors="coerce")
+    for column in RETURN_DISPLAY_COLUMNS:
+        data[column] = data[column].map(_restore_saved_return_value)
+    return data
+
+
+def save_closed_scenarios(
+    data: pd.DataFrame,
+    path: Path | str = CLOSED_SCENARIO_PATH,
+) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = data.reindex(columns=CLOSED_SCENARIO_DISPLAY_COLUMNS)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    normalized.to_csv(temporary_path, index=False, encoding="utf-8-sig")
+    temporary_path.replace(path)
+    return path
+
+
+def _restore_saved_return_value(value: object) -> object:
+    """Restore numeric CSV values while preserving progress/status labels."""
+    if pd.isna(value) or isinstance(value, (int, float)):
+        return value
+    text = str(value).strip()
+    if not text:
+        return value
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    try:
+        return float(text)
+    except ValueError:
+        return value
 
 
 def save_tracker_scan_outputs(
@@ -1411,6 +2043,186 @@ def scanner_table_for_display(
     return data.reindex(columns=columns).copy()
 
 
+def prioritize_scan_events(data: pd.DataFrame) -> pd.DataFrame:
+    """Put actionable signals first while preserving recency and market-cap order."""
+    display = data.copy()
+    if display.empty:
+        return display
+    display["_신호우선순위"] = display.apply(
+        lambda row: scan_event_priority(row.get("단계"), row.get("결과")),
+        axis=1,
+    )
+    if "차트 강도" in display.columns:
+        score_text = display["차트 강도"].astype(str).str.extract(
+            r"([0-9]+(?:\.[0-9]+)?)",
+            expand=False,
+        )
+        display["_차트강도순위"] = pd.to_numeric(
+            score_text, errors="coerce"
+        ).fillna(-1.0)
+    else:
+        display["_차트강도순위"] = -1.0
+    return (
+        display.sort_values(
+            by=["_신호우선순위", "_차트강도순위", "신호일", "순위"],
+            ascending=[True, False, False, True],
+            na_position="last",
+        )
+        .drop(columns=["_신호우선순위", "_차트강도순위"])
+        .reset_index(drop=True)
+    )
+
+
+def prioritize_active_scenarios(data: pd.DataFrame) -> pd.DataFrame:
+    display = data.copy()
+    if display.empty:
+        return display
+    display["_상태우선순위"] = display["현재상태"].map(
+        {"3차 신호 대기": 0, "2차 신호 대기": 1}
+    ).fillna(2)
+    first_dates = pd.to_datetime(display.get("1차신호일"), errors="coerce")
+    second_dates = pd.to_datetime(display.get("2차신호일"), errors="coerce")
+    display["_단계진입일"] = first_dates
+    waiting_for_third = display["현재상태"].eq("3차 신호 대기")
+    display.loc[waiting_for_third, "_단계진입일"] = second_dates[waiting_for_third]
+    return (
+        display.sort_values(
+            by=["_상태우선순위", "_단계진입일", "순위", "티커"],
+            ascending=[True, False, True, True],
+            na_position="last",
+        )
+        .drop(columns=["_상태우선순위", "_단계진입일"])
+        .reset_index(drop=True)
+    )
+
+
+def active_scenario_tag(state: object) -> str:
+    if state == "3차 신호 대기":
+        return "signal_second"
+    if state == "2차 신호 대기":
+        return "signal_first"
+    return ""
+
+
+def history_cycle_tag(result: object, *horizon_returns: object) -> str:
+    """Color a completed cycle by multi-horizon consistency and maturity."""
+    result_text = str(result)
+    if "폐기" in result_text:
+        return "history_discard"
+    if result_text == "실패":
+        return "history_failure"
+    if result_text != "매수 성공":
+        return ""
+
+    numeric_returns = pd.to_numeric(
+        pd.Series(horizon_returns, dtype=object), errors="coerce"
+    ).dropna()
+    confirmed_count = len(numeric_returns)
+    if confirmed_count == 0:
+        return "history_success_pending"
+
+    positive_count = int((numeric_returns > 0).sum())
+    negative_count = int((numeric_returns < 0).sum())
+
+    if positive_count == confirmed_count:
+        if confirmed_count == 4:
+            return "history_success_high"
+        if confirmed_count == 3:
+            return "history_success_medium"
+        return "history_success_low"
+
+    if negative_count == confirmed_count:
+        if confirmed_count == 4:
+            return "history_loss_high"
+        if confirmed_count == 3:
+            return "history_loss_medium"
+        return "history_loss_low"
+
+    if confirmed_count == 4:
+        if positive_count == 3:
+            return "history_success_medium"
+        if positive_count == 2:
+            return "history_flat"
+        if positive_count == 1 and negative_count > positive_count:
+            return "history_loss_low"
+
+    if positive_count > negative_count:
+        return "history_success_low"
+    if negative_count > positive_count:
+        return "history_loss_low"
+    if positive_count == negative_count:
+        return "history_flat"
+    return "history_success_pending"
+
+
+def scan_event_priority(stage: object, result: object) -> int:
+    if stage == "3차 신호" and result == "매수 성공":
+        return 0
+    if stage == "2차 신호":
+        return 1
+    if stage == "1차 신호":
+        return 2
+    return 3
+
+
+def scan_event_tag(stage: object, result: object) -> str:
+    priority = scan_event_priority(stage, result)
+    return {
+        0: "signal_third",
+        1: "signal_second",
+        2: "signal_first",
+    }.get(priority, "")
+
+
+def add_scan_performance_columns(
+    data: pd.DataFrame,
+    companies: list[MarketCapCompany],
+    cycles_by_ticker: dict[str, pd.DataFrame],
+    classifications: pd.DataFrame,
+    sector_output: pd.DataFrame,
+    horizon_months: int = 3,
+) -> pd.DataFrame:
+    display = data.copy()
+    ticker_column = f"종목 {horizon_months}개월 승률"
+    sector_column = f"섹터 {horizon_months}개월 승률"
+    display[ticker_column] = "미산출 (0건)"
+    display[sector_column] = "미산출 (0건)"
+    if display.empty:
+        return display
+
+    ticker_performance = build_ticker_performance(
+        companies,
+        cycles_by_ticker,
+        classifications,
+        horizon_months,
+    )
+    ticker_rates = {
+        str(row["티커"]).upper(): format_rate(
+            row["승률"], row["승리"], row["분석 표본"]
+        )
+        for _, row in ticker_performance.iterrows()
+    }
+
+    horizon_label = f"{horizon_months}개월"
+    if "분석 기간" in sector_output.columns:
+        sector_rows = sector_output[sector_output["분석 기간"].eq(horizon_label)]
+    else:
+        sector_rows = pd.DataFrame()
+    sector_rates = {
+        str(row["분야"]): format_rate(
+            row["승률"], row["승리"], row["분석 표본"]
+        )
+        for _, row in sector_rows.iterrows()
+    }
+
+    display[ticker_column] = (
+        display["티커"].astype(str).str.upper().map(ticker_rates).fillna("미산출 (0건)")
+    )
+    if "섹터" in display.columns:
+        display[sector_column] = display["섹터"].map(sector_rates).fillna("미산출 (0건)")
+    return display
+
+
 def add_sector_column(data: pd.DataFrame, classifications: pd.DataFrame) -> pd.DataFrame:
     display = data.copy()
     if "섹터" in display.columns:
@@ -1432,6 +2244,66 @@ def add_sector_column(data: pd.DataFrame, classifications: pd.DataFrame) -> pd.D
         display["티커"].astype(str).str.upper().map(sector_by_ticker).fillna("미분류"),
     )
     return display
+
+
+def build_closed_scenario_history(
+    companies: list[MarketCapCompany],
+    cycles_by_ticker: dict[str, pd.DataFrame],
+    classifications: pd.DataFrame,
+    previous: pd.DataFrame | None = None,
+    failed_tickers: set[str] | None = None,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    current_tickers = {company.ticker.upper() for company in companies}
+
+    for company in companies:
+        cycles = cycles_by_ticker.get(company.ticker.upper())
+        if cycles is None or cycles.empty or "Outcome" not in cycles.columns:
+            continue
+        closed = cycles.loc[
+            ~cycles["Outcome"].isin({"2차 신호 대기", "3차 신호 대기"})
+        ]
+        if closed.empty:
+            continue
+        display = signal_cycles_for_display(closed)
+        display.insert(0, "회사명", company.company)
+        display.insert(0, "티커", company.ticker.upper())
+        display.insert(0, "현재 시총순위", company.rank)
+        frames.append(display)
+
+    if frames:
+        current = add_sector_column(
+            pd.concat(frames, ignore_index=True),
+            classifications,
+        )
+    else:
+        current = pd.DataFrame(columns=CLOSED_SCENARIO_DISPLAY_COLUMNS)
+
+    failed = {ticker.upper() for ticker in (failed_tickers or set())}
+    if previous is not None and not previous.empty and failed:
+        if "현재 시총순위" not in previous.columns and "순위" in previous.columns:
+            previous = previous.rename(columns={"순위": "현재 시총순위"})
+        previous_tickers = previous["티커"].astype(str).str.upper()
+        preserved = previous.loc[
+            previous_tickers.isin(failed & current_tickers)
+        ].copy()
+        current = pd.concat([current, preserved], ignore_index=True)
+
+    if current.empty:
+        return pd.DataFrame(columns=CLOSED_SCENARIO_DISPLAY_COLUMNS)
+
+    current = current.reindex(columns=CLOSED_SCENARIO_DISPLAY_COLUMNS)
+    for column in ("1차신호일", "2차신호일", "3차판정일"):
+        current[column] = pd.to_datetime(current[column], errors="coerce")
+    return (
+        current.drop_duplicates(subset=["티커", "1차신호일"], keep="first")
+        .sort_values(
+            by=["1차신호일", "현재 시총순위", "티커"],
+            ascending=[False, True, True],
+            na_position="last",
+        )
+        .reset_index(drop=True)
+    )
 
 
 def field_performance_for_display(data: pd.DataFrame) -> pd.DataFrame:
@@ -1500,6 +2372,41 @@ def signal_cycles_for_display(data: pd.DataFrame) -> pd.DataFrame:
         missing = display[display_column].isna()
         display.loc[missing, display_column] = display.loc[missing, status_column]
     return display.reindex(columns=SIGNAL_HISTORY_DISPLAY_COLUMNS)
+
+
+def signal_cycle_position(
+    cycles: pd.DataFrame,
+    cycle: pd.Series | None,
+) -> int | None:
+    """Return the table row position corresponding to a chart cycle."""
+    if cycles.empty or cycle is None:
+        return None
+
+    matches = pd.Series(True, index=cycles.index)
+    compared = False
+    for column in ("FirstSignalDate", "SecondSignalDate", "ThirdDecisionDate"):
+        if column not in cycles.columns or column not in cycle.index:
+            continue
+        target = pd.to_datetime(cycle.get(column), errors="coerce")
+        values = pd.to_datetime(cycles[column], errors="coerce")
+        if pd.isna(target):
+            matches &= values.isna()
+        else:
+            matches &= values.dt.normalize().eq(pd.Timestamp(target).normalize())
+        compared = True
+
+    if "Outcome" in cycles.columns and "Outcome" in cycle.index:
+        matches &= cycles["Outcome"].astype(str).eq(str(cycle.get("Outcome")))
+        compared = True
+    if not compared:
+        return None
+
+    positions = [
+        position
+        for position, matched in enumerate(matches.to_numpy(dtype=bool))
+        if matched
+    ]
+    return positions[-1] if positions else None
 
 
 def _sorted_frame(
@@ -1575,7 +2482,7 @@ def _column_width(column: str) -> int:
         return 600
     if column in {"macd_area", "macd_flow"}:
         return 140
-    if column in {"순위", "티커"}:
+    if column in {"순위", "현재 시총순위", "티커"}:
         return 70
     if column == "시가총액":
         return 95
@@ -1595,10 +2502,19 @@ def _column_width(column: str) -> int:
         return 85
     if column == "결과":
         return 210
-    if column in {"승률", "매수 도달률"}:
+    if column in {"승률", "매수 도달률"} or column.endswith("개월 승률"):
         return 145
-    if column in {"종합점수", "분석 표본", "매수 건수", "종목 수", "종료 사이클"}:
+    if column in {
+        "종합점수",
+        "분석 표본",
+        "매수 건수",
+        "종목 수",
+        "종료 사이클",
+        "차트 강도",
+    }:
         return 95
+    if column == "검토등급":
+        return 90
     if column == "MA20_50이격률":
         return 120
     if column in {"단계", "신호구분"}:
