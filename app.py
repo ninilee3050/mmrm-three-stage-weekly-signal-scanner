@@ -9,6 +9,12 @@ from tkinter import messagebox, ttk
 
 import pandas as pd
 
+from chart_strength import (
+    ChartStrengthReferenceError,
+    annotate_scan_events,
+    chart_strength_detail_key,
+    load_chart_strength_reference,
+)
 from chart_preview import ChartPreviewWindow
 from data_provider import DataLoadError, load_weekly_data, normalize_ticker
 from indicators import calculate_indicators
@@ -57,6 +63,8 @@ SCAN_EVENT_DISPLAY_COLUMNS = [
     "섹터",
     "단계",
     "신호일",
+    "차트 강도",
+    "검토등급",
     "종목 3개월 승률",
     "섹터 3개월 승률",
     "결과",
@@ -118,6 +126,121 @@ RANKING_DISPLAY_COLUMNS = [
 ]
 
 
+class ChartStrengthTooltip:
+    """Small themed popup for one chart-strength table cell."""
+
+    def __init__(self, owner: tk.Misc, font_family: str) -> None:
+        self.owner = owner
+        self.font_family = font_family
+        self.window: tk.Toplevel | None = None
+
+    def show(
+        self,
+        x: int,
+        y: int,
+        detail: dict[str, object],
+        palette: dict[str, str],
+    ) -> None:
+        self.hide()
+        window = tk.Toplevel(self.owner)
+        window.wm_overrideredirect(True)
+        window.configure(background=palette["border"])
+        self.window = window
+
+        body = tk.Frame(window, background=palette["field"], padx=10, pady=9)
+        body.pack(padx=1, pady=1)
+        title = (
+            f"차트 강도 {detail.get('score_text', '계산 불가')}"
+            f" · {detail.get('grade', '확인 필요')}"
+        )
+        tk.Label(
+            body,
+            text=title,
+            background=palette["field"],
+            foreground=palette["text"],
+            font=(self.font_family, 10, "bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 7))
+
+        components = detail.get("components", [])
+        next_row = 1
+        if components:
+            for column, text in enumerate(("평가항목", "실제 값", "상대점수")):
+                tk.Label(
+                    body,
+                    text=text,
+                    background=palette["panel"],
+                    foreground=palette["muted"],
+                    font=(self.font_family, 9, "bold"),
+                    padx=5,
+                    pady=3,
+                ).grid(row=next_row, column=column, sticky="nsew")
+            next_row += 1
+            for component in components:
+                values = (
+                    str(component.get("label", "")),
+                    str(component.get("value_text", "")),
+                    str(component.get("score_text", "")),
+                )
+                for column, text in enumerate(values):
+                    tk.Label(
+                        body,
+                        text=text,
+                        background=palette["field"],
+                        foreground=palette["text"],
+                        font=(self.font_family, 9),
+                        padx=5,
+                        pady=2,
+                        anchor="e" if column else "w",
+                    ).grid(row=next_row, column=column, sticky="nsew")
+                next_row += 1
+
+        reasons = detail.get("reasons", [])
+        reason_text = "판단 이유\n" + "\n".join(f"• {reason}" for reason in reasons)
+        tk.Label(
+            body,
+            text=reason_text,
+            background=palette["field"],
+            foreground=palette["text"],
+            font=(self.font_family, 9),
+            justify="left",
+            anchor="w",
+            wraplength=470,
+        ).grid(row=next_row, column=0, columnspan=3, sticky="ew", pady=(8, 4))
+        next_row += 1
+
+        reference_count = int(detail.get("reference_count", 0) or 0)
+        footer = (
+            f"과거 확정 사례 {reference_count:,}건 기준\n"
+            f"{detail.get('note', '')}"
+        )
+        tk.Label(
+            body,
+            text=footer,
+            background=palette["field"],
+            foreground=palette["muted"],
+            font=(self.font_family, 8),
+            justify="left",
+            anchor="w",
+        ).grid(row=next_row, column=0, columnspan=3, sticky="ew", pady=(3, 0))
+
+        window.update_idletasks()
+        width = window.winfo_reqwidth()
+        height = window.winfo_reqheight()
+        screen_width = window.winfo_screenwidth()
+        screen_height = window.winfo_screenheight()
+        x = max(4, min(x, screen_width - width - 8))
+        y = max(4, min(y, screen_height - height - 8))
+        window.wm_geometry(f"+{x}+{y}")
+
+    def hide(self) -> None:
+        if self.window is not None:
+            try:
+                self.window.destroy()
+            except tk.TclError:
+                pass
+        self.window = None
+
+
 class BuyPointApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -167,6 +290,14 @@ class BuyPointApp(tk.Tk):
         self._syncing_chart_history_selection = False
         self.open_chart_after_search = False
         self.pending_chart_first_signal_date: pd.Timestamp | None = None
+        self.chart_strength_tooltip = ChartStrengthTooltip(
+            self,
+            self.ui_font_family,
+        )
+        self.chart_strength_details: dict[
+            tuple[str, str], dict[str, object]
+        ] = {}
+        self._chart_strength_hover_item = ""
 
         self._build_layout()
         active_display = scanner_table_for_display(
@@ -334,6 +465,10 @@ class BuyPointApp(tk.Tk):
 
         if hasattr(self, "theme_button"):
             self.theme_button.configure(text=self._theme_button_text())
+        tooltip = getattr(self, "chart_strength_tooltip", None)
+        if tooltip is not None:
+            tooltip.hide()
+            self._chart_strength_hover_item = ""
         for tree_name in ("scan_tree", "active_tree"):
             tree = getattr(self, tree_name, None)
             if tree is not None:
@@ -568,6 +703,14 @@ class BuyPointApp(tk.Tk):
             "<<TreeviewSelect>>",
             lambda event: self._on_scan_row_select(event, self.scan_tree),
         )
+        self.scan_tree.bind("<Motion>", self._on_chart_strength_motion, add="+")
+        self.scan_tree.bind("<Leave>", self._hide_chart_strength_tooltip, add="+")
+        self.scan_tree.bind(
+            "<ButtonPress>", self._hide_chart_strength_tooltip, add="+"
+        )
+        self.scan_tree.bind(
+            "<MouseWheel>", self._hide_chart_strength_tooltip, add="+"
+        )
         self.active_tree.bind(
             "<<TreeviewSelect>>",
             lambda event: self._on_scan_row_select(event, self.active_tree),
@@ -621,6 +764,47 @@ class BuyPointApp(tk.Tk):
         for item, (_, row) in zip(self.scan_tree.get_children(), data.iterrows()):
             tag = scan_event_tag(row.get("단계"), row.get("결과"))
             self.scan_tree.item(item, tags=(tag,) if tag else ())
+
+    def _on_chart_strength_motion(self, event) -> None:
+        tree = self.scan_tree
+        item = tree.identify_row(event.y)
+        column_id = tree.identify_column(event.x)
+        if not item or not column_id or tree.identify_region(event.x, event.y) != "cell":
+            self._hide_chart_strength_tooltip()
+            return
+
+        try:
+            column_index = int(column_id.removeprefix("#")) - 1
+            column_name = tree["columns"][column_index]
+        except (ValueError, IndexError, tk.TclError):
+            self._hide_chart_strength_tooltip()
+            return
+        if column_name != "차트 강도":
+            self._hide_chart_strength_tooltip()
+            return
+
+        ticker = tree.set(item, "티커")
+        signal_date = tree.set(item, "신호일")
+        detail = self.chart_strength_details.get(
+            chart_strength_detail_key(ticker, signal_date)
+        )
+        if detail is None:
+            self._hide_chart_strength_tooltip()
+            return
+        if self._chart_strength_hover_item == item and self.chart_strength_tooltip.window:
+            return
+
+        self._chart_strength_hover_item = item
+        self.chart_strength_tooltip.show(
+            tree.winfo_rootx() + event.x + 14,
+            tree.winfo_rooty() + event.y + 18,
+            detail,
+            theme_palette(self.theme_mode),
+        )
+
+    def _hide_chart_strength_tooltip(self, _event=None) -> None:
+        self.chart_strength_tooltip.hide()
+        self._chart_strength_hover_item = ""
 
     def _apply_active_scenario_tags(self, data: pd.DataFrame) -> None:
         for item, (_, row) in zip(self.active_tree.get_children(), data.iterrows()):
@@ -830,6 +1014,8 @@ class BuyPointApp(tk.Tk):
         self.latest_scan_date = None
         self.latest_classifications = pd.DataFrame()
         self.latest_cycles_by_ticker = {}
+        self.chart_strength_details = {}
+        self._hide_chart_strength_tooltip()
         self.latest_analysis_companies = []
         self.selected_field = None
         self.field_status_var.set("가격 데이터와 시나리오 성과를 계산하는 중입니다...")
@@ -856,7 +1042,14 @@ class BuyPointApp(tk.Tk):
 
             scan_date = pd.Timestamp.today().normalize()
             scan_universe = merge_scan_universe(companies, previous_active)
-            events, active_rows, closed_results, failures, cycles_by_ticker = self._scan_companies(
+            (
+                events,
+                active_rows,
+                closed_results,
+                failures,
+                cycles_by_ticker,
+                full_tables_by_ticker,
+            ) = self._scan_companies(
                 scan_universe,
                 scan_date,
                 previous_active,
@@ -872,6 +1065,7 @@ class BuyPointApp(tk.Tk):
                     retry_closed,
                     retry_failures,
                     retry_cycles,
+                    retry_full_tables,
                 ) = self._scan_companies(
                     retry_companies,
                     scan_date,
@@ -882,6 +1076,7 @@ class BuyPointApp(tk.Tk):
                 active_rows.extend(retry_active)
                 closed_results.extend(retry_closed)
                 cycles_by_ticker.update(retry_cycles)
+                full_tables_by_ticker.update(retry_full_tables)
                 failures = retry_failures
 
             failed_tickers = {
@@ -897,6 +1092,18 @@ class BuyPointApp(tk.Tk):
                 SCAN_EVENT_COLUMNS,
                 by=["신호일", "순위"],
                 ascending=[False, True],
+            )
+            try:
+                chart_strength_reference = load_chart_strength_reference()
+                reference_error = None
+            except ChartStrengthReferenceError as exc:
+                chart_strength_reference = None
+                reference_error = str(exc)
+            events_df, chart_strength_details = annotate_scan_events(
+                events_df,
+                full_tables_by_ticker,
+                chart_strength_reference,
+                reference_error=reference_error,
             )
             events_df = prioritize_scan_events(events_df)
             active_df = _sorted_frame(
@@ -967,6 +1174,7 @@ class BuyPointApp(tk.Tk):
             0,
             self._show_scan_result,
             events_df,
+            chart_strength_details,
             active_df,
             closed_df,
             closed_scenarios_df,
@@ -996,12 +1204,14 @@ class BuyPointApp(tk.Tk):
         list[dict[str, object]],
         list[dict[str, object]],
         dict[str, pd.DataFrame],
+        dict[str, pd.DataFrame],
     ]:
         events: list[dict[str, object]] = []
         active_rows: list[dict[str, object]] = []
         closed_results: list[dict[str, object]] = []
         failures: list[dict[str, object]] = []
         cycles_by_ticker: dict[str, pd.DataFrame] = {}
+        full_tables_by_ticker: dict[str, pd.DataFrame] = {}
         total = len(companies)
         previous_by_ticker = {
             str(row["티커"]).upper(): row
@@ -1023,6 +1233,7 @@ class BuyPointApp(tk.Tk):
                 calculated = calculate_indicators(raw_data)
                 cycles, full_table = scan_signal_cycles(calculated)
                 cycles_by_ticker[company.ticker.upper()] = cycles.copy()
+                full_tables_by_ticker[company.ticker.upper()] = full_table.copy()
                 ticker_events, active_row, ticker_closed = summarize_ticker_cycles(
                     company,
                     cycles,
@@ -1037,11 +1248,19 @@ class BuyPointApp(tk.Tk):
             except Exception as exc:
                 failures.append({"company": company, "error": str(exc)})
 
-        return events, active_rows, closed_results, failures, cycles_by_ticker
+        return (
+            events,
+            active_rows,
+            closed_results,
+            failures,
+            cycles_by_ticker,
+            full_tables_by_ticker,
+        )
 
     def _show_scan_result(
         self,
         events: pd.DataFrame,
+        chart_strength_details: dict[tuple[str, str], dict[str, object]],
         active_scenarios: pd.DataFrame,
         closed_results: pd.DataFrame,
         closed_scenarios: pd.DataFrame,
@@ -1055,6 +1274,7 @@ class BuyPointApp(tk.Tk):
         ranking_output: pd.DataFrame,
     ) -> None:
         self.latest_scan_events = events.copy()
+        self.chart_strength_details = dict(chart_strength_details)
         self.latest_active_scenarios = active_scenarios.copy()
         self.latest_closed_results = closed_results.copy()
         self.latest_closed_scenarios = closed_scenarios.copy()
@@ -1100,11 +1320,18 @@ class BuyPointApp(tk.Tk):
         third_count = int(
             ((events["단계"] == "3차 신호") & (events["결과"] == "매수 성공")).sum()
         ) if not events.empty else 0
+        priority_review_count = int(
+            (events.get("검토등급") == "우선검토").sum()
+        ) if not events.empty and "검토등급" in events.columns else 0
+        general_review_count = int(
+            (events.get("검토등급") == "일반검토").sum()
+        ) if not events.empty and "검토등급" in events.columns else 0
         failed_signal_count = int(
             ((events["단계"] == "3차 신호") & (events["결과"] == "실패")).sum()
         ) if not events.empty else 0
         self.scan_status_var.set(
-            f"스캔 완료 | 즉시 확인: 3차 신호 {third_count}개 / "
+            f"스캔 완료 | 즉시 확인: 3차 신호 {third_count}개 "
+            f"(우선검토 {priority_review_count}개 / 일반검토 {general_review_count}개) / "
             f"출발 준비: 2차 신호 {second_count}개 / 관심 편입: 1차 신호 {first_count}개 / "
             f"2차 폐기 {second_rejection_count}개 / "
             f"신호 실패 {failed_signal_count}개 / "
@@ -1751,13 +1978,23 @@ def prioritize_scan_events(data: pd.DataFrame) -> pd.DataFrame:
         lambda row: scan_event_priority(row.get("단계"), row.get("결과")),
         axis=1,
     )
+    if "차트 강도" in display.columns:
+        score_text = display["차트 강도"].astype(str).str.extract(
+            r"([0-9]+(?:\.[0-9]+)?)",
+            expand=False,
+        )
+        display["_차트강도순위"] = pd.to_numeric(
+            score_text, errors="coerce"
+        ).fillna(-1.0)
+    else:
+        display["_차트강도순위"] = -1.0
     return (
         display.sort_values(
-            by=["_신호우선순위", "신호일", "순위"],
-            ascending=[True, False, True],
+            by=["_신호우선순위", "_차트강도순위", "신호일", "순위"],
+            ascending=[True, False, False, True],
             na_position="last",
         )
-        .drop(columns=["_신호우선순위"])
+        .drop(columns=["_신호우선순위", "_차트강도순위"])
         .reset_index(drop=True)
     )
 
@@ -2193,8 +2430,17 @@ def _column_width(column: str) -> int:
         return 210
     if column in {"승률", "매수 도달률"} or column.endswith("개월 승률"):
         return 145
-    if column in {"종합점수", "분석 표본", "매수 건수", "종목 수", "종료 사이클"}:
+    if column in {
+        "종합점수",
+        "분석 표본",
+        "매수 건수",
+        "종목 수",
+        "종료 사이클",
+        "차트 강도",
+    }:
         return 95
+    if column == "검토등급":
+        return 90
     if column == "MA20_50이격률":
         return 120
     if column in {"단계", "신호구분"}:

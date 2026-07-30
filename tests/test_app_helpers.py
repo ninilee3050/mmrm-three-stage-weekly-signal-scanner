@@ -370,6 +370,41 @@ def test_scan_events_prioritize_actionable_third_then_second_then_first() -> Non
     assert scan_event_tag("3차 신호", "실패") == ""
 
 
+def test_scan_events_order_successful_third_signals_by_chart_strength() -> None:
+    events = pd.DataFrame(
+        [
+            {
+                "순위": 1,
+                "티커": "LOW",
+                "단계": "3차 신호",
+                "결과": "매수 성공",
+                "신호일": pd.Timestamp("2026-07-27"),
+                "차트 강도": "55점",
+            },
+            {
+                "순위": 20,
+                "티커": "HIGH",
+                "단계": "3차 신호",
+                "결과": "매수 성공",
+                "신호일": pd.Timestamp("2026-07-20"),
+                "차트 강도": "82점",
+            },
+            {
+                "순위": 2,
+                "티커": "SECOND",
+                "단계": "2차 신호",
+                "결과": "3차 신호 대기",
+                "신호일": pd.Timestamp("2026-07-27"),
+                "차트 강도": "산정 대기",
+            },
+        ]
+    )
+
+    sorted_events = prioritize_scan_events(events)
+
+    assert sorted_events["티커"].tolist() == ["HIGH", "LOW", "SECOND"]
+
+
 def test_active_scenarios_prioritize_third_waiting_and_use_completed_stage_colors() -> None:
     active = pd.DataFrame(
         [
