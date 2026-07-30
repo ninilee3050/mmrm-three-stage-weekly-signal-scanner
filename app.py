@@ -11,6 +11,8 @@ import pandas as pd
 
 from chart_strength import (
     ChartStrengthReferenceError,
+    annotate_completed_scenarios,
+    annotate_pending_scenarios,
     annotate_scan_events,
     chart_strength_detail_key,
     load_chart_strength_reference,
@@ -78,6 +80,8 @@ ACTIVE_SCENARIO_DISPLAY_COLUMNS = [
     "현재상태",
     "1차신호일",
     "2차신호일",
+    "차트 강도",
+    "검토등급",
     "종목 3개월 승률",
     "섹터 3개월 승률",
     "데이터기준일",
@@ -91,6 +95,8 @@ CLOSED_RESULT_DISPLAY_COLUMNS = [
     "1차신호일",
     "2차신호일",
     "3차판정일",
+    "차트 강도",
+    "검토등급",
     "종료일",
 ]
 CLOSED_SCENARIO_DISPLAY_COLUMNS = [
@@ -98,8 +104,18 @@ CLOSED_SCENARIO_DISPLAY_COLUMNS = [
     "티커",
     "회사명",
     "섹터",
-    *SIGNAL_HISTORY_DISPLAY_COLUMNS,
+    "1차신호일",
+    "2차신호일",
+    "3차판정일",
+    "결과",
+    "차트 강도",
+    "검토등급",
+    "3개월후 수익률",
+    "6개월후 수익률",
+    "9개월후 수익률",
+    "12개월후 수익률",
 ]
+RETURN_DISPLAY_COLUMNS = SIGNAL_HISTORY_DISPLAY_COLUMNS[-4:]
 FIELD_DISPLAY_COLUMNS = [
     "분야",
     "종목 수",
@@ -268,8 +284,8 @@ class BuyPointApp(tk.Tk):
         self.field_status_var = tk.StringVar(value="통합 스캔 후 분야별 성과를 확인할 수 있습니다.")
         self.top100_companies: list[MarketCapCompany] = []
         self.latest_scan_events = pd.DataFrame(columns=SCAN_EVENT_COLUMNS)
-        self.latest_active_scenarios = prioritize_active_scenarios(
-            load_active_scenarios()
+        self.latest_active_scenarios = annotate_pending_scenarios(
+            prioritize_active_scenarios(load_active_scenarios())
         )
         self.latest_closed_results = pd.DataFrame(columns=CLOSED_RESULT_COLUMNS)
         self.latest_closed_scenarios = load_closed_scenarios()
@@ -297,7 +313,7 @@ class BuyPointApp(tk.Tk):
         self.chart_strength_details: dict[
             tuple[str, str], dict[str, object]
         ] = {}
-        self._chart_strength_hover_item = ""
+        self._chart_strength_hover_item: tuple[str, str] | None = None
 
         self._build_layout()
         active_display = scanner_table_for_display(
@@ -468,7 +484,7 @@ class BuyPointApp(tk.Tk):
         tooltip = getattr(self, "chart_strength_tooltip", None)
         if tooltip is not None:
             tooltip.hide()
-            self._chart_strength_hover_item = ""
+            self._chart_strength_hover_item = None
         for tree_name in ("scan_tree", "active_tree"):
             tree = getattr(self, tree_name, None)
             if tree is not None:
@@ -703,13 +719,12 @@ class BuyPointApp(tk.Tk):
             "<<TreeviewSelect>>",
             lambda event: self._on_scan_row_select(event, self.scan_tree),
         )
-        self.scan_tree.bind("<Motion>", self._on_chart_strength_motion, add="+")
-        self.scan_tree.bind("<Leave>", self._hide_chart_strength_tooltip, add="+")
-        self.scan_tree.bind(
-            "<ButtonPress>", self._hide_chart_strength_tooltip, add="+"
-        )
-        self.scan_tree.bind(
-            "<MouseWheel>", self._hide_chart_strength_tooltip, add="+"
+        self._bind_chart_strength_tooltip(self.scan_tree, "신호일")
+        self._bind_chart_strength_tooltip(self.active_tree, "2차신호일")
+        self._bind_chart_strength_tooltip(self.closed_tree, "3차판정일")
+        self._bind_chart_strength_tooltip(
+            self.closed_scenario_tree,
+            "3차판정일",
         )
         self.active_tree.bind(
             "<<TreeviewSelect>>",
@@ -765,8 +780,27 @@ class BuyPointApp(tk.Tk):
             tag = scan_event_tag(row.get("단계"), row.get("결과"))
             self.scan_tree.item(item, tags=(tag,) if tag else ())
 
-    def _on_chart_strength_motion(self, event) -> None:
-        tree = self.scan_tree
+    def _bind_chart_strength_tooltip(
+        self,
+        tree: ttk.Treeview,
+        signal_date_column: str,
+    ) -> None:
+        tree.bind(
+            "<Motion>",
+            lambda event, source=tree, date_column=signal_date_column: (
+                self._on_chart_strength_motion(event, source, date_column)
+            ),
+            add="+",
+        )
+        for sequence in ("<Leave>", "<ButtonPress>", "<MouseWheel>"):
+            tree.bind(sequence, self._hide_chart_strength_tooltip, add="+")
+
+    def _on_chart_strength_motion(
+        self,
+        event,
+        tree: ttk.Treeview,
+        signal_date_column: str,
+    ) -> None:
         item = tree.identify_row(event.y)
         column_id = tree.identify_column(event.x)
         if not item or not column_id or tree.identify_region(event.x, event.y) != "cell":
@@ -784,17 +818,21 @@ class BuyPointApp(tk.Tk):
             return
 
         ticker = tree.set(item, "티커")
-        signal_date = tree.set(item, "신호일")
+        signal_date = tree.set(item, signal_date_column)
         detail = self.chart_strength_details.get(
             chart_strength_detail_key(ticker, signal_date)
         )
         if detail is None:
             self._hide_chart_strength_tooltip()
             return
-        if self._chart_strength_hover_item == item and self.chart_strength_tooltip.window:
+        hover_item = (str(tree), item)
+        if (
+            self._chart_strength_hover_item == hover_item
+            and self.chart_strength_tooltip.window
+        ):
             return
 
-        self._chart_strength_hover_item = item
+        self._chart_strength_hover_item = hover_item
         self.chart_strength_tooltip.show(
             tree.winfo_rootx() + event.x + 14,
             tree.winfo_rooty() + event.y + 18,
@@ -804,7 +842,7 @@ class BuyPointApp(tk.Tk):
 
     def _hide_chart_strength_tooltip(self, _event=None) -> None:
         self.chart_strength_tooltip.hide()
-        self._chart_strength_hover_item = ""
+        self._chart_strength_hover_item = None
 
     def _apply_active_scenario_tags(self, data: pd.DataFrame) -> None:
         for item, (_, row) in zip(self.active_tree.get_children(), data.iterrows()):
@@ -1113,6 +1151,7 @@ class BuyPointApp(tk.Tk):
                 ascending=[True, True],
             ).drop_duplicates(subset=["티커"], keep="last")
             active_df = prioritize_active_scenarios(active_df)
+            active_df = annotate_pending_scenarios(active_df)
             closed_df = _sorted_frame(
                 closed_results,
                 CLOSED_RESULT_COLUMNS,
@@ -1143,6 +1182,24 @@ class BuyPointApp(tk.Tk):
                 previous=self.latest_closed_scenarios,
                 failed_tickers=failed_tickers,
             )
+            closed_df, closed_chart_strength_details = (
+                annotate_completed_scenarios(
+                    closed_df,
+                    full_tables_by_ticker,
+                    chart_strength_reference,
+                    reference_error=reference_error,
+                )
+            )
+            closed_scenarios_df, history_chart_strength_details = (
+                annotate_completed_scenarios(
+                    closed_scenarios_df,
+                    full_tables_by_ticker,
+                    chart_strength_reference,
+                    reference_error=reference_error,
+                )
+            )
+            chart_strength_details.update(closed_chart_strength_details)
+            chart_strength_details.update(history_chart_strength_details)
 
             sector_output, industry_output, ranking_output = build_all_field_outputs(
                 companies,
@@ -1881,6 +1938,8 @@ def load_closed_scenarios(
     data = data.reindex(columns=CLOSED_SCENARIO_DISPLAY_COLUMNS)
     for column in ("1차신호일", "2차신호일", "3차판정일"):
         data[column] = pd.to_datetime(data[column], errors="coerce")
+    for column in RETURN_DISPLAY_COLUMNS:
+        data[column] = data[column].map(_restore_saved_return_value)
     return data
 
 
@@ -1895,6 +1954,21 @@ def save_closed_scenarios(
     normalized.to_csv(temporary_path, index=False, encoding="utf-8-sig")
     temporary_path.replace(path)
     return path
+
+
+def _restore_saved_return_value(value: object) -> object:
+    """Restore numeric CSV values while preserving progress/status labels."""
+    if pd.isna(value) or isinstance(value, (int, float)):
+        return value
+    text = str(value).strip()
+    if not text:
+        return value
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    try:
+        return float(text)
+    except ValueError:
+        return value
 
 
 def save_tracker_scan_outputs(

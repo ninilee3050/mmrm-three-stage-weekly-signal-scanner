@@ -264,6 +264,36 @@ def test_closed_scenario_loader_migrates_legacy_rank_column(tmp_path) -> None:
     assert loaded.loc[0, "현재 시총순위"] == 7
 
 
+def test_closed_scenario_loader_restores_mixed_saved_returns_as_numbers(tmp_path) -> None:
+    path = tmp_path / "mixed_returns.csv"
+    pd.DataFrame(
+        [
+            {
+                "티커": "AAA",
+                "1차신호일": "2025-01-06",
+                "3개월후 수익률": 12.3456789,
+                "6개월후 수익률": "진행 중",
+            },
+            {
+                "티커": "BBB",
+                "1차신호일": "2025-02-03",
+                "3개월후 수익률": "-4.5%",
+                "6개월후 수익률": "해당 없음",
+            },
+        ]
+    ).to_csv(path, index=False, encoding="utf-8-sig")
+
+    loaded = load_closed_scenarios(path)
+
+    assert loaded.loc[0, "3개월후 수익률"] == 12.3456789
+    assert _format_value(loaded.loc[0, "3개월후 수익률"], "3개월후 수익률") == (
+        "+12.35%"
+    )
+    assert loaded.loc[0, "6개월후 수익률"] == "진행 중"
+    assert loaded.loc[1, "3개월후 수익률"] == -4.5
+    assert loaded.loc[1, "6개월후 수익률"] == "해당 없음"
+
+
 def test_signal_history_displays_progress_and_unavailable_states() -> None:
     cycles = pd.DataFrame(
         [

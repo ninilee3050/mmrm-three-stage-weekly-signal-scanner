@@ -5,6 +5,8 @@ import pandas as pd
 
 from chart_strength import (
     FEATURE_KEYS,
+    annotate_completed_scenarios,
+    annotate_pending_scenarios,
     annotate_scan_events,
     chart_strength_detail_key,
     extract_chart_strength_features,
@@ -110,6 +112,43 @@ def test_annotation_adds_priority_grade_and_hover_detail_only_to_successful_thir
     key = chart_strength_detail_key("AAA", signal_date)
     assert len(details[key]["components"]) == 5
     assert details[key]["reasons"]
+
+
+def test_completed_and_active_tables_share_chart_strength_statuses() -> None:
+    full = sample_full_table()
+    signal_date = full.index[-1]
+    raw_features = extract_chart_strength_features(full, signal_date)
+    reference = ordered_reference()
+    for key, value in raw_features.items():
+        reference[key] = np.linspace(value * 0.25, value * 1.10, len(reference))
+
+    completed = pd.DataFrame(
+        [
+            {
+                "티커": "AAA",
+                "결과": "매수 성공",
+                "3차판정일": signal_date,
+            },
+            {
+                "티커": "BBB",
+                "결과": "실패",
+                "3차판정일": signal_date,
+            },
+        ]
+    )
+    annotated, details = annotate_completed_scenarios(
+        completed,
+        {"AAA": full},
+        reference,
+    )
+    active = annotate_pending_scenarios(pd.DataFrame([{"티커": "CCC"}]))
+
+    assert annotated.loc[0, "차트 강도"].endswith("점")
+    assert annotated.loc[0, "검토등급"] == "우선검토"
+    assert annotated.loc[1, "차트 강도"] == "해당 없음"
+    assert chart_strength_detail_key("AAA", signal_date) in details
+    assert active.loc[0, "차트 강도"] == "산정 대기"
+    assert active.loc[0, "검토등급"] == ""
 
 
 def test_bundled_reference_is_valid_and_large_enough_for_live_scoring() -> None:

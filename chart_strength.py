@@ -217,23 +217,61 @@ def annotate_scan_events(
             annotated.at[index, "검토등급"] = ""
             continue
 
-        if reference is None:
-            detail = unavailable_chart_strength(
-                reference_error or "차트 강도 기준자료를 불러오지 못했습니다."
-            )
-        elif pd.isna(signal_date) or ticker not in full_tables_by_ticker:
-            detail = unavailable_chart_strength("3차 신호 주봉 데이터를 찾지 못했습니다.")
-        else:
-            features = extract_chart_strength_features(
-                full_tables_by_ticker[ticker], pd.Timestamp(signal_date)
-            )
-            detail = score_chart_strength(features, signal_date, reference)
+        detail = _evaluate_chart_strength(
+            ticker,
+            signal_date,
+            full_tables_by_ticker,
+            reference,
+            reference_error,
+        )
 
         annotated.at[index, "차트 강도"] = detail["score_text"]
         annotated.at[index, "검토등급"] = detail["grade"]
         details[key] = detail
 
     return annotated, details
+
+
+def annotate_completed_scenarios(
+    scenarios: pd.DataFrame,
+    full_tables_by_ticker: dict[str, pd.DataFrame],
+    reference: pd.DataFrame | None,
+    reference_error: str | None = None,
+    signal_date_column: str = "3차판정일",
+) -> tuple[pd.DataFrame, dict[tuple[str, str], dict[str, object]]]:
+    """Add the same third-signal strength result to completed scenario rows."""
+    annotated = scenarios.copy()
+    annotated["차트 강도"] = ""
+    annotated["검토등급"] = ""
+    details: dict[tuple[str, str], dict[str, object]] = {}
+
+    for index, row in annotated.iterrows():
+        if row.get("결과") != "매수 성공":
+            annotated.at[index, "차트 강도"] = "해당 없음"
+            continue
+
+        ticker = str(row.get("티커", "")).strip().upper()
+        signal_date = pd.to_datetime(row.get(signal_date_column), errors="coerce")
+        detail = _evaluate_chart_strength(
+            ticker,
+            signal_date,
+            full_tables_by_ticker,
+            reference,
+            reference_error,
+        )
+        annotated.at[index, "차트 강도"] = detail["score_text"]
+        annotated.at[index, "검토등급"] = detail["grade"]
+        details[chart_strength_detail_key(ticker, signal_date)] = detail
+
+    return annotated, details
+
+
+def annotate_pending_scenarios(scenarios: pd.DataFrame) -> pd.DataFrame:
+    """Mark active first/second-stage scenarios as awaiting a third signal."""
+    annotated = scenarios.copy()
+    annotated["차트 강도"] = "산정 대기"
+    annotated["검토등급"] = ""
+    return annotated
 
 
 def chart_strength_detail_key(
@@ -243,6 +281,25 @@ def chart_strength_detail_key(
     date = pd.to_datetime(signal_date, errors="coerce")
     date_text = "" if pd.isna(date) else pd.Timestamp(date).strftime("%Y-%m-%d")
     return str(ticker).strip().upper(), date_text
+
+
+def _evaluate_chart_strength(
+    ticker: str,
+    signal_date: pd.Timestamp,
+    full_tables_by_ticker: dict[str, pd.DataFrame],
+    reference: pd.DataFrame | None,
+    reference_error: str | None,
+) -> dict[str, object]:
+    if reference is None:
+        return unavailable_chart_strength(
+            reference_error or "차트 강도 기준자료를 불러오지 못했습니다."
+        )
+    if pd.isna(signal_date) or ticker not in full_tables_by_ticker:
+        return unavailable_chart_strength("3차 신호 주봉 데이터를 찾지 못했습니다.")
+    features = extract_chart_strength_features(
+        full_tables_by_ticker[ticker], pd.Timestamp(signal_date)
+    )
+    return score_chart_strength(features, signal_date, reference)
 
 
 def _build_reasons(
