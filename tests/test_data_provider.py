@@ -10,6 +10,7 @@ from data_provider import (
     _read_local_csv,
     _resample_daily_to_weekly,
     _yahoo_query_ticker,
+    load_weekly_data_resilient,
 )
 
 
@@ -178,3 +179,71 @@ def test_download_weekly_from_yahoo_does_not_fall_back_to_raw_weekly(monkeypatch
 
     assert result.index.strftime("%Y-%m-%d").tolist() == ["2026-05-11"]
     assert raw_chart_calls == []
+
+
+def test_resilient_weekly_loader_refreshes_cache_older_than_expected_week(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cache_path = tmp_path / "^GSPC.csv"
+    cache_path.write_text(
+        "Date,Open,High,Low,Close,Volume\n2026-07-27,1,2,1,2,100\n",
+        encoding="utf-8",
+    )
+    refreshed = pd.DataFrame(
+        {
+            "Open": [2.0],
+            "High": [3.0],
+            "Low": [2.0],
+            "Close": [3.0],
+            "Volume": [200.0],
+        },
+        index=pd.to_datetime(["2026-08-17"]),
+    )
+    calls = []
+
+    def fake_download(ticker: str, include_current_week: bool = False) -> pd.DataFrame:
+        calls.append((ticker, include_current_week))
+        return refreshed
+
+    monkeypatch.setattr(data_provider, "_download_weekly_from_yahoo", fake_download)
+
+    result = load_weekly_data_resilient(
+        "^GSPC",
+        data_dir=tmp_path,
+        include_current_week=True,
+        expected_latest_date="2026-08-17",
+        max_cache_age_seconds=None,
+    )
+
+    assert result.source == "download"
+    assert result.data.index[-1] == pd.Timestamp("2026-08-17")
+    assert calls == [("^GSPC", True)]
+
+
+def test_resilient_weekly_loader_uses_valid_stale_cache_when_refresh_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cache_path = tmp_path / "^GSPC.csv"
+    cache_path.write_text(
+        "Date,Open,High,Low,Close,Volume\n2026-07-27,1,2,1,2,100\n",
+        encoding="utf-8",
+    )
+
+    def failing_download(ticker: str, include_current_week: bool = False) -> pd.DataFrame:
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(data_provider, "_download_weekly_from_yahoo", failing_download)
+
+    result = load_weekly_data_resilient(
+        "^GSPC",
+        data_dir=tmp_path,
+        include_current_week=True,
+        force_refresh=True,
+    )
+
+    assert result.used_stale_cache is True
+    assert result.data.index[-1] == pd.Timestamp("2026-07-27")
+    assert "저장 데이터 사용" in result.warning
+    assert "2026-07-27" in result.warning

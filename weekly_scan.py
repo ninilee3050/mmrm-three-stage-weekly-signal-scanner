@@ -9,6 +9,7 @@ import pandas as pd
 from data_provider import load_weekly_data
 from indicators import calculate_indicators
 from market_cap_provider import MarketCapCompany, fetch_us_top_market_cap
+from market_context import annotate_sp500_status, load_sp500_context
 from scanner import scan_signal_cycles
 from scenario_tracker import (
     ACTIVE_SCENARIO_COLUMNS,
@@ -35,6 +36,16 @@ def main() -> int:
         print("미국 시가총액 Top 100 목록과 활성 시나리오를 불러옵니다...")
         top100_companies = fetch_us_top_market_cap(limit=TOP100_LIMIT)
         companies = merge_scan_universe(top100_companies, previous_active)
+        print("S&P500 주봉 데이터를 한 번 갱신합니다...")
+        try:
+            sp500_data, sp500_load = load_sp500_context(
+                force_refresh=True,
+                max_cache_age_seconds=None,
+            )
+            sp500_warning = sp500_load.warning
+        except Exception as exc:
+            sp500_data = pd.DataFrame()
+            sp500_warning = f"S&P500 상태 확인 실패: {exc}"
 
         events, active_rows, closed_results, failures = scan_companies(
             companies,
@@ -68,17 +79,28 @@ def main() -> int:
             by=["신호일", "순위"],
             ascending=[False, True],
         )
+        events_df = annotate_sp500_status(
+            events_df,
+            sp500_data,
+            reference_date_columns=("신호일",),
+        )
         active_df = _sorted_frame(
             active_rows,
             ACTIVE_SCENARIO_COLUMNS,
             by=["순위", "티커"],
             ascending=[True, True],
         ).drop_duplicates(subset=["티커"], keep="last")
+        active_df = annotate_sp500_status(active_df, sp500_data, use_latest=True)
         closed_df = _sorted_frame(
             closed_results,
             CLOSED_RESULT_COLUMNS,
             by=["종료일", "순위"],
             ascending=[False, True],
+        )
+        closed_df = annotate_sp500_status(
+            closed_df,
+            sp500_data,
+            reference_date_columns=("3차판정일", "종료일", "2차신호일"),
         )
         failures_df = pd.DataFrame(
             [_failure_row(failure["company"], failure["error"]) for failure in failures],
@@ -116,6 +138,8 @@ def main() -> int:
         f"신호 실패 {signal_failure_count}개 / "
         f"계속 관찰 {len(active_df)}개 / 데이터 오류 {len(failures_df)}개"
     )
+    if sp500_warning:
+        print(sp500_warning)
     for path in saved_paths:
         print(f"저장: {path}")
     return 0
