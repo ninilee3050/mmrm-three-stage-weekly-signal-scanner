@@ -325,6 +325,12 @@ class BuyPointApp(tk.Tk):
         self.field_horizon_var = tk.StringVar(value="3개월")
         self.ranking_sort_var = tk.StringVar(value="종합점수")
         self.field_status_var = tk.StringVar(value="통합 스캔 후 분야별 성과를 확인할 수 있습니다.")
+        self.closed_grade_filter_enabled_var = tk.BooleanVar(value=False)
+        self.closed_grade_filter_var = tk.StringVar(value="우선검토")
+        self.closed_score_filter_enabled_var = tk.BooleanVar(value=False)
+        self.closed_score_min_var = tk.StringVar(value="70")
+        self.closed_score_max_var = tk.StringVar(value="100")
+        self.closed_filter_status_var = tk.StringVar(value="")
         self.top100_companies: list[MarketCapCompany] = []
         self.latest_scan_events = pd.DataFrame(columns=SCAN_EVENT_COLUMNS)
         self.latest_active_scenarios = annotate_pending_scenarios(
@@ -365,15 +371,7 @@ class BuyPointApp(tk.Tk):
         )
         populate_table(self.active_tree, active_display)
         self._apply_active_scenario_tags(active_display)
-        populate_table(
-            self.closed_scenario_tree,
-            self.latest_closed_scenarios,
-            column_bounds=CLOSED_SCENARIO_COLUMN_BOUNDS,
-        )
-        self._apply_history_tags(
-            self.latest_closed_scenarios,
-            tree=self.closed_scenario_tree,
-        )
+        self._refresh_closed_scenario_view()
 
     def _apply_theme(self) -> None:
         palette = theme_palette(self.theme_mode)
@@ -434,6 +432,37 @@ class BuyPointApp(tk.Tk):
             bordercolor=palette["border"],
             lightcolor=palette["border"],
             darkcolor=palette["border"],
+        )
+        self.style.map(
+            "TEntry",
+            fieldbackground=[("invalid", palette["signal_third_bg"])],
+            foreground=[("invalid", palette["signal_third_text"])],
+            bordercolor=[("invalid", palette["signal_third_text"])],
+        )
+        self.style.configure(
+            "Filter.TCheckbutton",
+            background=palette["window"],
+            foreground=palette["text"],
+            indicatorcolor=palette["field"],
+            bordercolor=palette["border"],
+            lightcolor=palette["border"],
+            darkcolor=palette["border"],
+            focuscolor=palette["window"],
+        )
+        self.style.map(
+            "Filter.TCheckbutton",
+            background=[
+                ("pressed", palette["window"]),
+                ("active", palette["window"]),
+            ],
+            foreground=[
+                ("pressed", palette["text"]),
+                ("active", palette["text"]),
+            ],
+            indicatorcolor=[
+                ("selected", palette["selected"]),
+                ("!selected", palette["field"]),
+            ],
         )
         self.style.configure(
             "TCombobox",
@@ -754,7 +783,71 @@ class BuyPointApp(tk.Tk):
         self._configure_signal_tree_tags(self.scan_tree)
         self._configure_signal_tree_tags(self.active_tree)
         self.closed_tree = self._create_table(closed_tab)
-        self.closed_scenario_tree = self._create_table(closed_scenario_tab)
+        closed_filter_frame = ttk.Frame(
+            closed_scenario_tab,
+            padding=(4, 4, 4, 2),
+        )
+        closed_filter_frame.pack(fill="x")
+        ttk.Checkbutton(
+            closed_filter_frame,
+            text="검토등급",
+            variable=self.closed_grade_filter_enabled_var,
+            command=self._refresh_closed_scenario_view,
+            style="Filter.TCheckbutton",
+        ).pack(side="left")
+        grade_combo = ttk.Combobox(
+            closed_filter_frame,
+            textvariable=self.closed_grade_filter_var,
+            values=("우선검토", "일반검토", "확인 필요", "해당 없음"),
+            width=10,
+            state="readonly",
+        )
+        grade_combo.pack(side="left", padx=(2, 12))
+        grade_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._refresh_closed_scenario_view(),
+        )
+
+        ttk.Checkbutton(
+            closed_filter_frame,
+            text="차트 강도",
+            variable=self.closed_score_filter_enabled_var,
+            command=self._refresh_closed_scenario_view,
+            style="Filter.TCheckbutton",
+        ).pack(side="left")
+        self.closed_score_min_entry = ttk.Entry(
+            closed_filter_frame,
+            textvariable=self.closed_score_min_var,
+            width=6,
+        )
+        self.closed_score_min_entry.pack(side="left", padx=(2, 3))
+        ttk.Label(closed_filter_frame, text="~").pack(side="left")
+        self.closed_score_max_entry = ttk.Entry(
+            closed_filter_frame,
+            textvariable=self.closed_score_max_var,
+            width=6,
+        )
+        self.closed_score_max_entry.pack(side="left", padx=(3, 6))
+        for entry in (self.closed_score_min_entry, self.closed_score_max_entry):
+            entry.bind("<Return>", lambda _event: self._refresh_closed_scenario_view())
+        ttk.Button(
+            closed_filter_frame,
+            text="적용",
+            command=self._refresh_closed_scenario_view,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            closed_filter_frame,
+            text="초기화",
+            command=self._reset_closed_scenario_filters,
+        ).pack(side="left")
+        ttk.Label(
+            closed_filter_frame,
+            textvariable=self.closed_filter_status_var,
+        ).pack(side="right")
+
+        closed_scenario_table_frame = ttk.Frame(closed_scenario_tab)
+        closed_scenario_table_frame.pack(fill="both", expand=True)
+        self.closed_scenario_tree = self._create_table(closed_scenario_table_frame)
         self._configure_history_tree_tags(self.closed_scenario_tree)
         self._build_field_performance_tab(field_tab)
         self.failure_tree = self._create_table(failure_tab)
@@ -958,6 +1051,52 @@ class BuyPointApp(tk.Tk):
                 row.get("12개월후 수익률"),
             )
             tree.item(item, tags=(tag,) if tag else ())
+
+    def _reset_closed_scenario_filters(self) -> None:
+        self.closed_grade_filter_enabled_var.set(False)
+        self.closed_grade_filter_var.set("우선검토")
+        self.closed_score_filter_enabled_var.set(False)
+        self.closed_score_min_var.set("70")
+        self.closed_score_max_var.set("100")
+        self._refresh_closed_scenario_view()
+
+    def _refresh_closed_scenario_view(self) -> None:
+        for entry_name in ("closed_score_min_entry", "closed_score_max_entry"):
+            entry = getattr(self, entry_name, None)
+            if entry is not None:
+                entry.state(["!invalid"])
+
+        try:
+            minimum, maximum = validate_chart_strength_range(
+                self.closed_score_min_var.get(),
+                self.closed_score_max_var.get(),
+                enabled=self.closed_score_filter_enabled_var.get(),
+            )
+        except ValueError as exc:
+            for entry_name in ("closed_score_min_entry", "closed_score_max_entry"):
+                entry = getattr(self, entry_name, None)
+                if entry is not None:
+                    entry.state(["invalid"])
+            self.closed_filter_status_var.set(str(exc))
+            return
+
+        display = filter_closed_scenarios(
+            self.latest_closed_scenarios,
+            grade_enabled=self.closed_grade_filter_enabled_var.get(),
+            grade=self.closed_grade_filter_var.get(),
+            score_enabled=self.closed_score_filter_enabled_var.get(),
+            minimum_score=minimum,
+            maximum_score=maximum,
+        )
+        populate_table(
+            self.closed_scenario_tree,
+            display,
+            column_bounds=CLOSED_SCENARIO_COLUMN_BOUNDS,
+        )
+        self._apply_history_tags(display, tree=self.closed_scenario_tree)
+        self.closed_filter_status_var.set(
+            f"표시 {len(display):,}건 / 전체 {len(self.latest_closed_scenarios):,}건"
+        )
 
     def _create_table(self, parent: tk.Widget) -> ttk.Treeview:
         frame = ttk.Frame(parent)
@@ -1437,12 +1576,7 @@ class BuyPointApp(tk.Tk):
             self.closed_tree,
             scanner_table_for_display(closed_results, CLOSED_RESULT_DISPLAY_COLUMNS),
         )
-        populate_table(
-            self.closed_scenario_tree,
-            closed_scenarios,
-            column_bounds=CLOSED_SCENARIO_COLUMN_BOUNDS,
-        )
-        self._apply_history_tags(closed_scenarios, tree=self.closed_scenario_tree)
+        self._refresh_closed_scenario_view()
         populate_table(self.failure_tree, failures)
         self._refresh_field_analytics(reset_selection=True)
 
@@ -2167,6 +2301,81 @@ def scanner_table_for_display(
     columns: list[str],
 ) -> pd.DataFrame:
     return data.reindex(columns=columns).copy()
+
+
+def validate_chart_strength_range(
+    minimum_text: object,
+    maximum_text: object,
+    enabled: bool = True,
+) -> tuple[float | None, float | None]:
+    if not enabled:
+        return None, None
+
+    def parse_bound(value: object, label: str) -> float | None:
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except ValueError as exc:
+            raise ValueError(f"{label} 점수에 0~100 숫자를 입력해 주세요.") from exc
+        if not 0 <= number <= 100:
+            raise ValueError(f"{label} 점수는 0~100 범위여야 합니다.")
+        return number
+
+    minimum = parse_bound(minimum_text, "최소")
+    maximum = parse_bound(maximum_text, "최대")
+    if minimum is not None and maximum is not None and minimum > maximum:
+        raise ValueError("최소 점수는 최대 점수보다 클 수 없습니다.")
+    return minimum, maximum
+
+
+def filter_closed_scenarios(
+    data: pd.DataFrame,
+    *,
+    grade_enabled: bool = False,
+    grade: str = "",
+    score_enabled: bool = False,
+    minimum_score: float | None = None,
+    maximum_score: float | None = None,
+) -> pd.DataFrame:
+    """Filter only the closed-scenario view without mutating saved history."""
+    display = data.copy()
+    if display.empty:
+        return display.reset_index(drop=True)
+
+    mask = pd.Series(True, index=display.index)
+    if grade_enabled:
+        grades = display.get(
+            "검토등급",
+            pd.Series("", index=display.index, dtype="object"),
+        ).fillna("").astype(str).str.strip()
+        strengths = display.get(
+            "차트 강도",
+            pd.Series("", index=display.index, dtype="object"),
+        ).fillna("").astype(str).str.strip()
+        effective_grades = grades.mask(
+            grades.eq("") & strengths.eq("해당 없음"),
+            "해당 없음",
+        )
+        mask &= effective_grades.eq(str(grade).strip())
+
+    if score_enabled:
+        strengths = display.get(
+            "차트 강도",
+            pd.Series("", index=display.index, dtype="object"),
+        ).astype(str)
+        scores = pd.to_numeric(
+            strengths.str.extract(r"([0-9]+(?:\.[0-9]+)?)", expand=False),
+            errors="coerce",
+        )
+        mask &= scores.notna()
+        if minimum_score is not None:
+            mask &= scores.ge(minimum_score)
+        if maximum_score is not None:
+            mask &= scores.le(maximum_score)
+
+    return display.loc[mask].reset_index(drop=True)
 
 
 def prioritize_scan_events(data: pd.DataFrame) -> pd.DataFrame:

@@ -26,6 +26,7 @@ from app import (
     add_sector_column,
     build_closed_scenario_history,
     field_performance_for_display,
+    filter_closed_scenarios,
     history_cycle_tag,
     load_closed_scenarios,
     prioritize_active_scenarios,
@@ -37,6 +38,7 @@ from app import (
     scanner_table_for_display,
     signal_cycle_position,
     signal_cycles_for_display,
+    validate_chart_strength_range,
 )
 from market_cap_provider import MarketCapCompany
 
@@ -94,6 +96,71 @@ def test_spare_table_width_is_distributed_without_squeezing_columns() -> None:
     assert distributed["결과"] > preferred["결과"]
     assert distributed["12개월후 수익률"] > preferred["12개월후 수익률"]
     assert _distributed_column_widths(preferred, 300) == preferred
+
+
+def test_closed_scenario_filters_combine_grade_and_score_range() -> None:
+    source = pd.DataFrame(
+        [
+            {"티커": "AAA", "차트 강도": "82.4점", "검토등급": "우선검토"},
+            {"티커": "BBB", "차트 강도": "72점", "검토등급": "우선검토"},
+            {"티커": "CCC", "차트 강도": "64점", "검토등급": "일반검토"},
+            {"티커": "DDD", "차트 강도": "해당 없음", "검토등급": ""},
+        ]
+    )
+
+    filtered = filter_closed_scenarios(
+        source,
+        grade_enabled=True,
+        grade="우선검토",
+        score_enabled=True,
+        minimum_score=75,
+        maximum_score=90,
+    )
+
+    assert filtered["티커"].tolist() == ["AAA"]
+    assert source["티커"].tolist() == ["AAA", "BBB", "CCC", "DDD"]
+
+
+def test_closed_scenario_filters_can_run_independently() -> None:
+    source = pd.DataFrame(
+        [
+            {"티커": "AAA", "차트 강도": "82점", "검토등급": "우선검토"},
+            {"티커": "BBB", "차트 강도": "64점", "검토등급": "일반검토"},
+            {"티커": "CCC", "차트 강도": "해당 없음", "검토등급": ""},
+        ]
+    )
+
+    by_score = filter_closed_scenarios(
+        source,
+        score_enabled=True,
+        minimum_score=60,
+        maximum_score=70,
+    )
+    by_not_applicable = filter_closed_scenarios(
+        source,
+        grade_enabled=True,
+        grade="해당 없음",
+    )
+
+    assert by_score["티커"].tolist() == ["BBB"]
+    assert by_not_applicable["티커"].tolist() == ["CCC"]
+
+
+def test_chart_strength_range_validation_supports_open_bounds() -> None:
+    assert validate_chart_strength_range("70", "100") == (70.0, 100.0)
+    assert validate_chart_strength_range("", "85") == (None, 85.0)
+    assert validate_chart_strength_range("90", "") == (90.0, None)
+    assert validate_chart_strength_range("bad", "100", enabled=False) == (None, None)
+
+
+def test_chart_strength_range_validation_rejects_invalid_ranges() -> None:
+    for minimum, maximum in (("101", ""), ("", "-1"), ("80", "70"), ("x", "90")):
+        try:
+            validate_chart_strength_range(minimum, maximum)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError((minimum, maximum))
 
 
 def test_signal_cycle_position_matches_the_exact_history_cycle() -> None:
