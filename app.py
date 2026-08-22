@@ -53,6 +53,8 @@ SIGNAL_HISTORY_DISPLAY_COLUMNS = [
     "2차신호일",
     "3차판정일",
     "결과",
+    "차트 강도",
+    "검토등급",
     "3개월후 수익률",
     "6개월후 수익률",
     "9개월후 수익률",
@@ -115,6 +117,47 @@ CLOSED_SCENARIO_DISPLAY_COLUMNS = [
     "9개월후 수익률",
     "12개월후 수익률",
 ]
+CLOSED_SCENARIO_COLUMN_BOUNDS = {
+    "현재 시총순위": (76, 86),
+    "티커": (60, 72),
+    "회사명": (150, 205),
+    "섹터": (95, 130),
+    "1차신호일": (90, 100),
+    "2차신호일": (90, 100),
+    "3차판정일": (90, 100),
+    "결과": (125, 155),
+    "차트 강도": (76, 90),
+    "검토등급": (76, 95),
+    "3개월후 수익률": (100, 110),
+    "6개월후 수익률": (100, 110),
+    "9개월후 수익률": (100, 110),
+    "12개월후 수익률": (105, 115),
+}
+SIGNAL_HISTORY_COLUMN_BOUNDS = {
+    "1차신호일": (90, 100),
+    "2차신호일": (90, 100),
+    "3차판정일": (90, 100),
+    "결과": (120, 155),
+    "차트 강도": (76, 90),
+    "검토등급": (76, 95),
+    "3개월후 수익률": (100, 110),
+    "6개월후 수익률": (100, 110),
+    "9개월후 수익률": (100, 110),
+    "12개월후 수익률": (105, 115),
+}
+TABLE_FLEX_WEIGHTS = {
+    "회사명": 4.0,
+    "오류": 5.0,
+    "ConditionSummary": 5.0,
+    "섹터": 2.0,
+    "산업": 2.0,
+    "분야": 2.0,
+    "결과": 2.5,
+    "현재상태": 2.0,
+    "데이터상태": 2.0,
+    "검토등급": 1.0,
+    "차트 강도": 1.0,
+}
 RETURN_DISPLAY_COLUMNS = SIGNAL_HISTORY_DISPLAY_COLUMNS[-4:]
 FIELD_DISPLAY_COLUMNS = [
     "분야",
@@ -322,7 +365,11 @@ class BuyPointApp(tk.Tk):
         )
         populate_table(self.active_tree, active_display)
         self._apply_active_scenario_tags(active_display)
-        populate_table(self.closed_scenario_tree, self.latest_closed_scenarios)
+        populate_table(
+            self.closed_scenario_tree,
+            self.latest_closed_scenarios,
+            column_bounds=CLOSED_SCENARIO_COLUMN_BOUNDS,
+        )
         self._apply_history_tags(
             self.latest_closed_scenarios,
             tree=self.closed_scenario_tree,
@@ -507,18 +554,22 @@ class BuyPointApp(tk.Tk):
 
     def _build_layout(self) -> None:
         left_panel_width = 490
-        history_panel_width = _table_required_width(SIGNAL_HISTORY_DISPLAY_COLUMNS)
+        history_panel_width = _table_required_width(
+            SIGNAL_HISTORY_DISPLAY_COLUMNS,
+            SIGNAL_HISTORY_COLUMN_BOUNDS,
+        )
+        scanner_table_specs = (
+            (SCAN_EVENT_DISPLAY_COLUMNS, None),
+            (ACTIVE_SCENARIO_DISPLAY_COLUMNS, None),
+            (CLOSED_RESULT_DISPLAY_COLUMNS, None),
+            (CLOSED_SCENARIO_DISPLAY_COLUMNS, CLOSED_SCENARIO_COLUMN_BOUNDS),
+            (FIELD_DISPLAY_COLUMNS, None),
+            (RANKING_DISPLAY_COLUMNS, None),
+            (SCAN_FAILURE_COLUMNS, None),
+        )
         scanner_panel_width = max(
-            _table_required_width(columns)
-            for columns in (
-                SCAN_EVENT_DISPLAY_COLUMNS,
-                ACTIVE_SCENARIO_DISPLAY_COLUMNS,
-                CLOSED_RESULT_DISPLAY_COLUMNS,
-                CLOSED_SCENARIO_DISPLAY_COLUMNS,
-                FIELD_DISPLAY_COLUMNS,
-                RANKING_DISPLAY_COLUMNS,
-                SCAN_FAILURE_COLUMNS,
-            )
+            _table_required_width(columns, column_bounds)
+            for columns, column_bounds in scanner_table_specs
         )
         initial_width = (
             left_panel_width
@@ -633,7 +684,11 @@ class BuyPointApp(tk.Tk):
         table_frame.grid(row=3, column=0, sticky="nsew")
         self.buy_tree = self._create_table(table_frame)
         self._configure_history_tree_tags()
-        populate_table(self.buy_tree, pd.DataFrame(columns=SIGNAL_HISTORY_DISPLAY_COLUMNS))
+        populate_table(
+            self.buy_tree,
+            pd.DataFrame(columns=SIGNAL_HISTORY_DISPLAY_COLUMNS),
+            column_bounds=SIGNAL_HISTORY_COLUMN_BOUNDS,
+        )
         self.buy_tree.bind("<<TreeviewSelect>>", self._on_history_select)
         self.buy_tree.bind("<Double-1>", self._on_history_double_click)
 
@@ -710,6 +765,7 @@ class BuyPointApp(tk.Tk):
         populate_table(
             self.closed_scenario_tree,
             pd.DataFrame(columns=CLOSED_SCENARIO_DISPLAY_COLUMNS),
+            column_bounds=CLOSED_SCENARIO_COLUMN_BOUNDS,
         )
         populate_table(self.field_tree, pd.DataFrame(columns=FIELD_DISPLAY_COLUMNS))
         populate_table(self.ranking_tree, pd.DataFrame(columns=RANKING_DISPLAY_COLUMNS))
@@ -725,6 +781,11 @@ class BuyPointApp(tk.Tk):
         self._bind_chart_strength_tooltip(
             self.closed_scenario_tree,
             "3차판정일",
+        )
+        self._bind_chart_strength_tooltip(
+            self.buy_tree,
+            "3차판정일",
+            ticker_column=None,
         )
         self.active_tree.bind(
             "<<TreeviewSelect>>",
@@ -784,11 +845,18 @@ class BuyPointApp(tk.Tk):
         self,
         tree: ttk.Treeview,
         signal_date_column: str,
+        ticker_column: str | None = "티커",
     ) -> None:
         tree.bind(
             "<Motion>",
-            lambda event, source=tree, date_column=signal_date_column: (
-                self._on_chart_strength_motion(event, source, date_column)
+            lambda event, source=tree, date_column=signal_date_column,
+            ticker_name=ticker_column: (
+                self._on_chart_strength_motion(
+                    event,
+                    source,
+                    date_column,
+                    ticker_name,
+                )
             ),
             add="+",
         )
@@ -800,6 +868,7 @@ class BuyPointApp(tk.Tk):
         event,
         tree: ttk.Treeview,
         signal_date_column: str,
+        ticker_column: str | None = "티커",
     ) -> None:
         item = tree.identify_row(event.y)
         column_id = tree.identify_column(event.x)
@@ -817,7 +886,11 @@ class BuyPointApp(tk.Tk):
             self._hide_chart_strength_tooltip()
             return
 
-        ticker = tree.set(item, "티커")
+        ticker = (
+            tree.set(item, ticker_column)
+            if ticker_column
+            else (self.current_ticker or "")
+        )
         signal_date = tree.set(item, signal_date_column)
         detail = self.chart_strength_details.get(
             chart_strength_detail_key(ticker, signal_date)
@@ -891,6 +964,11 @@ class BuyPointApp(tk.Tk):
         frame.pack(fill="both", expand=True)
 
         tree = ttk.Treeview(frame, show="headings")
+        tree.bind(
+            "<Configure>",
+            lambda _event, source=tree: _fit_table_columns_to_viewport(source),
+            add="+",
+        )
         y_scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
         x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
@@ -1359,7 +1437,11 @@ class BuyPointApp(tk.Tk):
             self.closed_tree,
             scanner_table_for_display(closed_results, CLOSED_RESULT_DISPLAY_COLUMNS),
         )
-        populate_table(self.closed_scenario_tree, closed_scenarios)
+        populate_table(
+            self.closed_scenario_tree,
+            closed_scenarios,
+            column_bounds=CLOSED_SCENARIO_COLUMN_BOUNDS,
+        )
         self._apply_history_tags(closed_scenarios, tree=self.closed_scenario_tree)
         populate_table(self.failure_tree, failures)
         self._refresh_field_analytics(reset_selection=True)
@@ -1608,11 +1690,34 @@ class BuyPointApp(tk.Tk):
                 company=self.current_company,
                 navigation_index=position,
                 navigation_total=len(self.current_signal_cycles),
+                chart_strength_summary=self._chart_strength_summary(cycle),
             )
             if position is not None:
                 self._select_history_position(position)
         except ValueError as exc:
             messagebox.showerror("차트 미리보기 오류", str(exc))
+
+    def _chart_strength_summary(self, cycle: pd.Series | None) -> str:
+        if cycle is None:
+            return "차트 강도: 해당 없음"
+        outcome = str(cycle.get("Outcome", ""))
+        if "대기" in outcome:
+            return "차트 강도: 산정 대기"
+        if outcome != "매수 성공":
+            return "차트 강도: 해당 없음"
+
+        detail = self.chart_strength_details.get(
+            chart_strength_detail_key(
+                self.current_ticker or "",
+                cycle.get("ThirdDecisionDate"),
+            )
+        )
+        if detail is None:
+            return "차트 강도: 계산 불가  |  검토등급: 확인 필요"
+        return (
+            f"차트 강도: {detail.get('score_text', '계산 불가')}  |  "
+            f"검토등급: {detail.get('grade', '확인 필요')}"
+        )
 
     def _navigate_chart_history(self, direction: int) -> None:
         if self.current_signal_cycles.empty or not self._chart_is_open():
@@ -1774,6 +1879,19 @@ class BuyPointApp(tk.Tk):
             calculated = calculate_indicators(raw_data)
             signal_cycles, full_table = scan_signal_cycles(calculated)
             signal_path, full_path = save_signal_outputs(ticker, signal_cycles, full_table)
+            reference_error = None
+            try:
+                chart_strength_reference = load_chart_strength_reference()
+            except ChartStrengthReferenceError as exc:
+                chart_strength_reference = None
+                reference_error = str(exc)
+            history_display, chart_strength_details = annotate_signal_history_display(
+                ticker,
+                signal_cycles,
+                full_table,
+                chart_strength_reference,
+                reference_error=reference_error,
+            )
             classifications = load_sector_classifications([ticker])
             cycles_by_ticker = {ticker.upper(): signal_cycles}
             performance_by_horizon = {
@@ -1799,6 +1917,8 @@ class BuyPointApp(tk.Tk):
             company,
             classifications,
             performance_by_horizon,
+            history_display,
+            chart_strength_details,
         )
 
     def _show_result(
@@ -1810,13 +1930,19 @@ class BuyPointApp(tk.Tk):
         company: MarketCapCompany,
         classifications: pd.DataFrame,
         performance_by_horizon: dict[int, pd.Series],
+        history_display: pd.DataFrame,
+        chart_strength_details: dict[tuple[str, str], dict[str, object]],
     ) -> None:
         self.current_ticker = ticker.upper()
         self.current_company = company.company
         self.current_chart_data = full_table.copy()
         self.current_signal_cycles = signal_cycles.reset_index(drop=True).copy()
-        history_display = signal_cycles_for_display(signal_cycles)
-        populate_table(self.buy_tree, history_display)
+        self.chart_strength_details.update(chart_strength_details)
+        populate_table(
+            self.buy_tree,
+            history_display,
+            column_bounds=SIGNAL_HISTORY_COLUMN_BOUNDS,
+        )
         self._apply_history_tags(history_display)
 
         count = len(signal_cycles)
@@ -2374,6 +2500,29 @@ def signal_cycles_for_display(data: pd.DataFrame) -> pd.DataFrame:
     return display.reindex(columns=SIGNAL_HISTORY_DISPLAY_COLUMNS)
 
 
+def annotate_signal_history_display(
+    ticker: str,
+    signal_cycles: pd.DataFrame,
+    full_table: pd.DataFrame,
+    reference: pd.DataFrame | None,
+    reference_error: str | None = None,
+) -> tuple[pd.DataFrame, dict[tuple[str, str], dict[str, object]]]:
+    """Apply the scanner's chart-strength method to one ticker's history."""
+    display = signal_cycles_for_display(signal_cycles)
+    scored_input = display.copy()
+    scored_input.insert(0, "티커", ticker.upper())
+    annotated, details = annotate_completed_scenarios(
+        scored_input,
+        {ticker.upper(): full_table},
+        reference,
+        reference_error=reference_error,
+    )
+    waiting = annotated["결과"].astype(str).str.contains("대기", na=False)
+    annotated.loc[waiting, "차트 강도"] = "산정 대기"
+    annotated.loc[waiting, "검토등급"] = ""
+    return annotated.reindex(columns=SIGNAL_HISTORY_DISPLAY_COLUMNS), details
+
+
 def signal_cycle_position(
     cycles: pd.DataFrame,
     cycle: pd.Series | None,
@@ -2421,7 +2570,11 @@ def _sorted_frame(
     return data.sort_values(by=by, ascending=ascending, na_position="last").reset_index(drop=True)
 
 
-def populate_table(tree: ttk.Treeview, data: pd.DataFrame) -> None:
+def populate_table(
+    tree: ttk.Treeview,
+    data: pd.DataFrame,
+    column_bounds: dict[str, tuple[int, int]] | None = None,
+) -> None:
     tree.delete(*tree.get_children())
     columns = list(data.columns)
     tree["columns"] = columns
@@ -2440,20 +2593,93 @@ def populate_table(tree: ttk.Treeview, data: pd.DataFrame) -> None:
                 default_font.measure(values[column_index]) + 24,
             )
         maximum_width = 700 if column in {"오류", "ConditionSummary"} else 360
-        display_width = min(
-            max(_column_width(column), measured_width),
-            maximum_width,
-        )
+        if column_bounds and column in column_bounds:
+            minimum_width, maximum_width = column_bounds[column]
+            display_width = min(
+                max(minimum_width, measured_width),
+                maximum_width,
+            )
+        else:
+            display_width = min(
+                max(_column_width(column), measured_width),
+                maximum_width,
+            )
         tree.heading(column, text=column)
         tree.column(column, width=display_width, minwidth=60, stretch=False)
 
     for values in formatted_rows:
         tree.insert("", "end", values=values)
 
+    tree._mmrm_preferred_widths = {
+        column: int(tree.column(column, "width"))
+        for column in columns
+    }
+    tree.after_idle(lambda source=tree: _fit_table_columns_to_viewport(source))
 
-def _table_required_width(columns: list[str]) -> int:
+
+def _fit_table_columns_to_viewport(tree: ttk.Treeview) -> None:
+    """Fill spare table width without compressing readable content widths."""
+    preferred = getattr(tree, "_mmrm_preferred_widths", None)
+    if not preferred:
+        return
+    try:
+        available = max(0, int(tree.winfo_width()) - 4)
+    except tk.TclError:
+        return
+    preferred_total = sum(preferred.values())
+    if available <= 1 or preferred_total <= 0:
+        return
+
+    widths = _distributed_column_widths(preferred, available)
+
+    for column, width in widths.items():
+        try:
+            tree.column(column, width=max(60, int(width)), stretch=False)
+        except tk.TclError:
+            return
+
+
+def _distributed_column_widths(
+    preferred: dict[str, int],
+    available: int,
+) -> dict[str, int]:
+    """Distribute only spare pixels; never squeeze preferred readable widths."""
+    widths = dict(preferred)
+    extra = int(available) - sum(widths.values())
+    if extra <= 0 or not widths:
+        return widths
+
+    weights = {
+        column: TABLE_FLEX_WEIGHTS.get(
+            column,
+            1.0 if column.endswith(("수익률", "손익률")) else 0.0,
+        )
+        for column in widths
+    }
+    if not any(weights.values()):
+        weights = {column: 1.0 for column in widths}
+    flexible = [column for column, weight in weights.items() if weight > 0]
+    total_weight = sum(weights[column] for column in flexible)
+    assigned = 0
+    for column in flexible[:-1]:
+        addition = int(extra * weights[column] / total_weight)
+        widths[column] += addition
+        assigned += addition
+    if flexible:
+        widths[flexible[-1]] += extra - assigned
+    return widths
+
+
+def _table_required_width(
+    columns: list[str],
+    column_bounds: dict[str, tuple[int, int]] | None = None,
+) -> int:
     """Return the panel width needed to show every configured column at once."""
-    return sum(_column_width(column) for column in columns) + 42
+    bounds = column_bounds or {}
+    return sum(
+        bounds.get(column, (_column_width(column), _column_width(column)))[1]
+        for column in columns
+    ) + 42
 
 
 def _column_width(column: str) -> int:

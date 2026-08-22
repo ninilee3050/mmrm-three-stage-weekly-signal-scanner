@@ -223,6 +223,7 @@ class ChartPreviewWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._close)
 
         self.status_var = tk.StringVar(value="차트 데이터를 준비해 주세요.")
+        self.chart_strength_var = tk.StringVar(value="차트 강도: 산정 대기")
         self.hover_var = tk.StringVar(
             value=(
                 "방향키 ←·→: 이전·다음 기록  |  휠: 확대·축소  |  "
@@ -262,6 +263,12 @@ class ChartPreviewWindow(tk.Toplevel):
             command=self._toggle_benchmark,
         )
         self._position_header_controls()
+        ttk.Label(
+            self,
+            textvariable=self.chart_strength_var,
+            font=(self.ui_font_family, 9, "bold"),
+            padding=(10, 0, 10, 2),
+        ).pack(fill="x")
         ttk.Label(
             self,
             textvariable=self.hover_var,
@@ -513,6 +520,7 @@ class ChartPreviewWindow(tk.Toplevel):
         company: str = "",
         navigation_index: int | None = None,
         navigation_total: int = 0,
+        chart_strength_summary: str = "",
     ) -> None:
         missing = [column for column in CHART_COLUMNS if column not in data.columns]
         if missing:
@@ -542,6 +550,9 @@ class ChartPreviewWindow(tk.Toplevel):
         self.status_var.set(
             f"{self.ticker}{name}  |  1차 {first}  ·  2차 {second}  ·  "
             f"3차 {third}  |  {outcome}{return_suffix}"
+        )
+        self.chart_strength_var.set(
+            chart_strength_summary or "차트 강도: 해당 없음"
         )
         self._set_navigation_state(navigation_index, navigation_total)
         self.title(f"{self.ticker} · MMRM 시나리오 차트 미리보기")
