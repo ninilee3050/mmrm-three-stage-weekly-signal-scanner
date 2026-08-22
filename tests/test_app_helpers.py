@@ -6,6 +6,7 @@ import pandas as pd
 
 from app import (
     ACTIVE_SCENARIO_DISPLAY_COLUMNS,
+    CLOSED_SCENARIO_COLUMN_BOUNDS,
     CLOSED_SCENARIO_DISPLAY_COLUMNS,
     CLOSED_RESULT_DISPLAY_COLUMNS,
     FIELD_DISPLAY_COLUMNS,
@@ -13,11 +14,14 @@ from app import (
     SCAN_EVENT_DISPLAY_COLUMNS,
     SCAN_FAILURE_COLUMNS,
     SIGNAL_HISTORY_DISPLAY_COLUMNS,
+    SIGNAL_HISTORY_COLUMN_BOUNDS,
     BuyPointApp,
     _column_width,
+    _distributed_column_widths,
     _format_value,
     _table_required_width,
     active_scenario_tag,
+    annotate_signal_history_display,
     add_scan_performance_columns,
     add_sector_column,
     build_closed_scenario_history,
@@ -38,22 +42,58 @@ from market_cap_provider import MarketCapCompany
 
 
 def test_table_panel_widths_cover_every_visible_column() -> None:
-    history_width = _table_required_width(SIGNAL_HISTORY_DISPLAY_COLUMNS)
-    scanner_tables = (
-        SCAN_EVENT_DISPLAY_COLUMNS,
-        ACTIVE_SCENARIO_DISPLAY_COLUMNS,
-        CLOSED_RESULT_DISPLAY_COLUMNS,
-        CLOSED_SCENARIO_DISPLAY_COLUMNS,
-        FIELD_DISPLAY_COLUMNS,
-        RANKING_DISPLAY_COLUMNS,
-        SCAN_FAILURE_COLUMNS,
+    history_width = _table_required_width(
+        SIGNAL_HISTORY_DISPLAY_COLUMNS,
+        SIGNAL_HISTORY_COLUMN_BOUNDS,
     )
-    scanner_width = max(_table_required_width(columns) for columns in scanner_tables)
+    scanner_tables = (
+        (SCAN_EVENT_DISPLAY_COLUMNS, None),
+        (ACTIVE_SCENARIO_DISPLAY_COLUMNS, None),
+        (CLOSED_RESULT_DISPLAY_COLUMNS, None),
+        (CLOSED_SCENARIO_DISPLAY_COLUMNS, CLOSED_SCENARIO_COLUMN_BOUNDS),
+        (FIELD_DISPLAY_COLUMNS, None),
+        (RANKING_DISPLAY_COLUMNS, None),
+        (SCAN_FAILURE_COLUMNS, None),
+    )
+    scanner_width = max(
+        _table_required_width(columns, bounds)
+        for columns, bounds in scanner_tables
+    )
 
-    assert history_width > sum(_column_width(column) for column in SIGNAL_HISTORY_DISPLAY_COLUMNS)
-    assert all(scanner_width >= _table_required_width(columns) for columns in scanner_tables)
+    assert history_width == sum(
+        bounds[1] for bounds in SIGNAL_HISTORY_COLUMN_BOUNDS.values()
+    ) + 42
+    assert all(
+        scanner_width >= _table_required_width(columns, bounds)
+        for columns, bounds in scanner_tables
+    )
     assert _column_width("회사명") >= 220
     assert _column_width("결과") >= 200
+
+
+def test_closed_scenario_balanced_width_keeps_last_return_column_visible() -> None:
+    balanced_width = _table_required_width(
+        CLOSED_SCENARIO_DISPLAY_COLUMNS,
+        CLOSED_SCENARIO_COLUMN_BOUNDS,
+    )
+
+    assert list(CLOSED_SCENARIO_COLUMN_BOUNDS) == CLOSED_SCENARIO_DISPLAY_COLUMNS
+    assert CLOSED_SCENARIO_COLUMN_BOUNDS["12개월후 수익률"][0] >= 100
+    assert balanced_width == sum(
+        maximum for _, maximum in CLOSED_SCENARIO_COLUMN_BOUNDS.values()
+    ) + 42
+    assert balanced_width < _table_required_width(CLOSED_SCENARIO_DISPLAY_COLUMNS)
+
+
+def test_spare_table_width_is_distributed_without_squeezing_columns() -> None:
+    preferred = {"회사명": 160, "결과": 130, "12개월후 수익률": 105}
+    distributed = _distributed_column_widths(preferred, 600)
+
+    assert sum(distributed.values()) == 600
+    assert distributed["회사명"] > preferred["회사명"]
+    assert distributed["결과"] > preferred["결과"]
+    assert distributed["12개월후 수익률"] > preferred["12개월후 수익률"]
+    assert _distributed_column_widths(preferred, 300) == preferred
 
 
 def test_signal_cycle_position_matches_the_exact_history_cycle() -> None:
@@ -78,6 +118,47 @@ def test_signal_cycle_position_matches_the_exact_history_cycle() -> None:
     assert signal_cycle_position(cycles, cycles.iloc[1].copy()) == 1
     assert signal_cycle_position(cycles, None) is None
     assert signal_cycle_position(pd.DataFrame(), cycles.iloc[0]) is None
+
+
+def test_selected_ticker_history_uses_scanner_chart_strength_statuses() -> None:
+    cycles = pd.DataFrame(
+        [
+            {
+                "FirstSignalDate": pd.Timestamp("2024-01-01"),
+                "SecondSignalDate": pd.Timestamp("2024-02-05"),
+                "ThirdDecisionDate": pd.Timestamp("2024-02-19"),
+                "Outcome": "매수 성공",
+            },
+            {
+                "FirstSignalDate": pd.Timestamp("2025-01-06"),
+                "SecondSignalDate": pd.Timestamp("2025-02-03"),
+                "ThirdDecisionDate": pd.Timestamp("2025-02-17"),
+                "Outcome": "실패",
+            },
+            {
+                "FirstSignalDate": pd.Timestamp("2026-01-05"),
+                "SecondSignalDate": pd.NaT,
+                "ThirdDecisionDate": pd.NaT,
+                "Outcome": "2차 신호 대기",
+            },
+        ]
+    )
+
+    display, details = annotate_signal_history_display(
+        "AAA",
+        cycles,
+        pd.DataFrame(),
+        reference=None,
+        reference_error="기준자료 오류",
+    )
+
+    assert display.columns.tolist() == SIGNAL_HISTORY_DISPLAY_COLUMNS
+    assert display.loc[0, "차트 강도"] == "계산 불가"
+    assert display.loc[0, "검토등급"] == "확인 필요"
+    assert display.loc[1, "차트 강도"] == "해당 없음"
+    assert display.loc[2, "차트 강도"] == "산정 대기"
+    assert display.loc[2, "검토등급"] == ""
+    assert len(details) == 1
 
 
 def test_signal_cycle_position_rejects_a_different_outcome() -> None:
@@ -123,6 +204,32 @@ def test_chart_history_navigation_moves_one_cycle_and_stops_at_edges() -> None:
     shown.clear()
     BuyPointApp._navigate_chart_history(app, -1)
     assert shown == []
+
+
+def test_chart_preview_strength_summary_tracks_selected_history_cycle() -> None:
+    signal_date = pd.Timestamp("2026-07-27")
+    cycle = pd.Series(
+        {
+            "Outcome": "매수 성공",
+            "ThirdDecisionDate": signal_date,
+        }
+    )
+    app = object.__new__(BuyPointApp)
+    app.current_ticker = "AAA"
+    app.chart_strength_details = {
+        ("AAA", "2026-07-27"): {
+            "score_text": "82.4점",
+            "grade": "우선검토",
+        }
+    }
+
+    assert BuyPointApp._chart_strength_summary(app, cycle) == (
+        "차트 강도: 82.4점  |  검토등급: 우선검토"
+    )
+    assert BuyPointApp._chart_strength_summary(
+        app,
+        pd.Series({"Outcome": "3차 신호 대기"}),
+    ) == "차트 강도: 산정 대기"
 
 
 def test_select_history_position_selects_focuses_and_scrolls_the_row() -> None:
