@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -18,6 +19,19 @@ YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
 
 class DataLoadError(RuntimeError):
     """Raised when Yahoo Finance cannot provide ticker data."""
+
+
+@dataclass(frozen=True)
+class WeeklyDataLoadResult:
+    """Weekly data plus enough provenance for an honest UI status."""
+
+    data: pd.DataFrame
+    source: str
+    warning: str = ""
+
+    @property
+    def used_stale_cache(self) -> bool:
+        return self.source == "stale_cache"
 
 
 def normalize_ticker(ticker: str) -> str:
@@ -56,6 +70,73 @@ def load_weekly_data(
 
     data.to_csv(csv_path, index_label="Date", encoding="utf-8-sig")
     return data
+
+
+def load_weekly_data_resilient(
+    ticker: str,
+    data_dir: Path | str = DATA_DIR,
+    include_current_week: bool = False,
+    *,
+    force_refresh: bool = False,
+    expected_latest_date: pd.Timestamp | str | None = None,
+    max_cache_age_seconds: float | None = None,
+) -> WeeklyDataLoadResult:
+    """Refresh stale weekly data and fall back to a valid cache on network errors.
+
+    This is intended for auxiliary series such as a comparison benchmark.  The
+    ordinary stock loader remains strict so a failed live scan cannot silently
+    masquerade as current stock data.
+    """
+    ticker = normalize_ticker(ticker)
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = data_dir / f"{ticker}.csv"
+
+    cached: pd.DataFrame | None = None
+    if csv_path.exists():
+        try:
+            candidate = _read_local_csv(
+                csv_path,
+                include_current_week=include_current_week,
+            )
+            if _is_monday_labeled_weekly(candidate):
+                cached = candidate
+        except Exception:
+            cached = None
+
+    needs_refresh = force_refresh or cached is None
+    if cached is not None and expected_latest_date is not None:
+        expected = _monday_week_start(
+            pd.DatetimeIndex([pd.Timestamp(expected_latest_date)])
+        )[0]
+        cached_latest = pd.Timestamp(cached.index[-1]).normalize()
+        needs_refresh = needs_refresh or cached_latest < expected
+    if cached is not None and max_cache_age_seconds is not None:
+        cache_age = max(0.0, time.time() - csv_path.stat().st_mtime)
+        needs_refresh = needs_refresh or cache_age > max_cache_age_seconds
+
+    if not needs_refresh and cached is not None:
+        return WeeklyDataLoadResult(cached, "cache")
+
+    try:
+        downloaded = _download_weekly_from_yahoo(
+            ticker,
+            include_current_week=include_current_week,
+        )
+        if downloaded.empty:
+            raise DataLoadError(f"{ticker} 데이터가 비어 있습니다.")
+        downloaded.to_csv(csv_path, index_label="Date", encoding="utf-8-sig")
+        return WeeklyDataLoadResult(downloaded, "download")
+    except Exception as exc:
+        if cached is None:
+            if isinstance(exc, DataLoadError):
+                raise
+            raise DataLoadError(str(exc)) from exc
+        latest = pd.Timestamp(cached.index[-1]).strftime("%Y-%m-%d")
+        warning = (
+            f"최신 데이터 갱신 실패 · 저장 데이터 사용 · 기준일 {latest} · {exc}"
+        )
+        return WeeklyDataLoadResult(cached, "stale_cache", warning)
 
 
 def _read_local_csv(path: Path, include_current_week: bool = False) -> pd.DataFrame:

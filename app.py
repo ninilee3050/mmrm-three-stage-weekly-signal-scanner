@@ -21,6 +21,12 @@ from chart_preview import ChartPreviewWindow
 from data_provider import DataLoadError, load_weekly_data, normalize_ticker
 from indicators import calculate_indicators
 from market_cap_provider import MarketCapCompany, MarketCapLoadError, fetch_us_top_market_cap
+from market_context import (
+    SP500_STATUS_COLUMN,
+    annotate_sp500_status,
+    load_sp500_context,
+    sp500_summary_for_cycle,
+)
 from performance_analytics import (
     build_all_field_outputs,
     build_field_performance,
@@ -55,6 +61,7 @@ SIGNAL_HISTORY_DISPLAY_COLUMNS = [
     "결과",
     "차트 강도",
     "검토등급",
+    SP500_STATUS_COLUMN,
     "3개월후 수익률",
     "6개월후 수익률",
     "9개월후 수익률",
@@ -69,6 +76,7 @@ SCAN_EVENT_DISPLAY_COLUMNS = [
     "신호일",
     "차트 강도",
     "검토등급",
+    SP500_STATUS_COLUMN,
     "종목 3개월 승률",
     "섹터 3개월 승률",
     "결과",
@@ -84,6 +92,7 @@ ACTIVE_SCENARIO_DISPLAY_COLUMNS = [
     "2차신호일",
     "차트 강도",
     "검토등급",
+    SP500_STATUS_COLUMN,
     "종목 3개월 승률",
     "섹터 3개월 승률",
     "데이터기준일",
@@ -99,6 +108,7 @@ CLOSED_RESULT_DISPLAY_COLUMNS = [
     "3차판정일",
     "차트 강도",
     "검토등급",
+    SP500_STATUS_COLUMN,
     "종료일",
 ]
 CLOSED_SCENARIO_DISPLAY_COLUMNS = [
@@ -112,6 +122,7 @@ CLOSED_SCENARIO_DISPLAY_COLUMNS = [
     "결과",
     "차트 강도",
     "검토등급",
+    SP500_STATUS_COLUMN,
     "3개월후 수익률",
     "6개월후 수익률",
     "9개월후 수익률",
@@ -128,6 +139,7 @@ CLOSED_SCENARIO_COLUMN_BOUNDS = {
     "결과": (125, 155),
     "차트 강도": (76, 90),
     "검토등급": (76, 95),
+    SP500_STATUS_COLUMN: (90, 108),
     "3개월후 수익률": (100, 110),
     "6개월후 수익률": (100, 110),
     "9개월후 수익률": (100, 110),
@@ -140,6 +152,7 @@ SIGNAL_HISTORY_COLUMN_BOUNDS = {
     "결과": (120, 155),
     "차트 강도": (76, 90),
     "검토등급": (76, 95),
+    SP500_STATUS_COLUMN: (90, 108),
     "3개월후 수익률": (100, 110),
     "6개월후 수익률": (100, 110),
     "9개월후 수익률": (100, 110),
@@ -157,6 +170,7 @@ TABLE_FLEX_WEIGHTS = {
     "데이터상태": 2.0,
     "검토등급": 1.0,
     "차트 강도": 1.0,
+    SP500_STATUS_COLUMN: 1.2,
 }
 RETURN_DISPLAY_COLUMNS = SIGNAL_HISTORY_DISPLAY_COLUMNS[-4:]
 FIELD_DISPLAY_COLUMNS = [
@@ -351,6 +365,10 @@ class BuyPointApp(tk.Tk):
         self.current_company = ""
         self.current_chart_data = pd.DataFrame()
         self.current_signal_cycles = pd.DataFrame()
+        self.current_sp500_data = pd.DataFrame()
+        self.current_sp500_warning = ""
+        self.latest_sp500_data = pd.DataFrame()
+        self.latest_sp500_warning = ""
         self.chart_window: ChartPreviewWindow | None = None
         self._syncing_chart_history_selection = False
         self.open_chart_after_search = False
@@ -1295,6 +1313,17 @@ class BuyPointApp(tk.Tk):
                 companies = fetch_us_top_market_cap(limit=100)
                 self.after(0, self._show_top100_loaded_by_scan, companies)
 
+            self.after(0, self.scan_status_var.set, "S&P500 주봉 데이터를 갱신하는 중입니다...")
+            try:
+                sp500_data, sp500_load = load_sp500_context(
+                    force_refresh=True,
+                    max_cache_age_seconds=None,
+                )
+                sp500_warning = sp500_load.warning
+            except Exception as exc:
+                sp500_data = pd.DataFrame()
+                sp500_warning = f"S&P500 상태 확인 실패: {exc}"
+
             scan_date = pd.Timestamp.today().normalize()
             scan_universe = merge_scan_universe(companies, previous_active)
             (
@@ -1360,6 +1389,11 @@ class BuyPointApp(tk.Tk):
                 chart_strength_reference,
                 reference_error=reference_error,
             )
+            events_df = annotate_sp500_status(
+                events_df,
+                sp500_data,
+                reference_date_columns=("신호일",),
+            )
             events_df = prioritize_scan_events(events_df)
             active_df = _sorted_frame(
                 active_rows,
@@ -1369,6 +1403,11 @@ class BuyPointApp(tk.Tk):
             ).drop_duplicates(subset=["티커"], keep="last")
             active_df = prioritize_active_scenarios(active_df)
             active_df = annotate_pending_scenarios(active_df)
+            active_df = annotate_sp500_status(
+                active_df,
+                sp500_data,
+                use_latest=True,
+            )
             closed_df = _sorted_frame(
                 closed_results,
                 CLOSED_RESULT_COLUMNS,
@@ -1407,6 +1446,11 @@ class BuyPointApp(tk.Tk):
                     reference_error=reference_error,
                 )
             )
+            closed_df = annotate_sp500_status(
+                closed_df,
+                sp500_data,
+                reference_date_columns=("3차판정일", "종료일", "2차신호일"),
+            )
             closed_scenarios_df, history_chart_strength_details = (
                 annotate_completed_scenarios(
                     closed_scenarios_df,
@@ -1414,6 +1458,11 @@ class BuyPointApp(tk.Tk):
                     chart_strength_reference,
                     reference_error=reference_error,
                 )
+            )
+            closed_scenarios_df = annotate_sp500_status(
+                closed_scenarios_df,
+                sp500_data,
+                reference_date_columns=("3차판정일", "2차신호일", "1차신호일"),
             )
             chart_strength_details.update(closed_chart_strength_details)
             chart_strength_details.update(history_chart_strength_details)
@@ -1460,6 +1509,8 @@ class BuyPointApp(tk.Tk):
             sector_output,
             industry_output,
             ranking_output,
+            sp500_data,
+            sp500_warning,
         )
 
     def _show_top100_loaded_by_scan(self, companies: list[MarketCapCompany]) -> None:
@@ -1546,6 +1597,8 @@ class BuyPointApp(tk.Tk):
         sector_output: pd.DataFrame,
         industry_output: pd.DataFrame,
         ranking_output: pd.DataFrame,
+        sp500_data: pd.DataFrame,
+        sp500_warning: str,
     ) -> None:
         self.latest_scan_events = events.copy()
         self.chart_strength_details = dict(chart_strength_details)
@@ -1563,6 +1616,8 @@ class BuyPointApp(tk.Tk):
         self.latest_sector_performance = sector_output.copy()
         self.latest_industry_performance = industry_output.copy()
         self.latest_field_rankings = ranking_output.copy()
+        self.latest_sp500_data = sp500_data.copy()
+        self.latest_sp500_warning = sp500_warning
         scan_display = scanner_table_for_display(events, SCAN_EVENT_DISPLAY_COLUMNS)
         populate_table(self.scan_tree, scan_display)
         self._apply_scan_event_tags(scan_display)
@@ -1602,6 +1657,7 @@ class BuyPointApp(tk.Tk):
         failed_signal_count = int(
             ((events["단계"] == "3차 신호") & (events["결과"] == "실패")).sum()
         ) if not events.empty else 0
+        market_suffix = f" / {sp500_warning}" if sp500_warning else ""
         self.scan_status_var.set(
             f"스캔 완료 | 즉시 확인: 3차 신호 {third_count}개 "
             f"(우선검토 {priority_review_count}개 / 일반검토 {general_review_count}개) / "
@@ -1609,7 +1665,7 @@ class BuyPointApp(tk.Tk):
             f"2차 폐기 {second_rejection_count}개 / "
             f"신호 실패 {failed_signal_count}개 / "
             f"계속 관찰 {len(active_scenarios)}개 / 데이터 오류 {len(failures)}개{failed_suffix}. "
-            f"필요하면 스캔 저장하기를 눌러 CSV로 저장하세요."
+            f"필요하면 스캔 저장하기를 눌러 CSV로 저장하세요.{market_suffix}"
         )
         self.scan_status_label.configure(
             style="ScanAlert.TLabel" if third_count > 0 else "ScanStatus.TLabel"
@@ -1825,6 +1881,12 @@ class BuyPointApp(tk.Tk):
                 navigation_index=position,
                 navigation_total=len(self.current_signal_cycles),
                 chart_strength_summary=self._chart_strength_summary(cycle),
+                sp500_summary=sp500_summary_for_cycle(
+                    self.current_sp500_data,
+                    cycle,
+                ),
+                sp500_data=self.current_sp500_data,
+                sp500_warning=self.current_sp500_warning,
             )
             if position is not None:
                 self._select_history_position(position)
@@ -2019,12 +2081,21 @@ class BuyPointApp(tk.Tk):
             except ChartStrengthReferenceError as exc:
                 chart_strength_reference = None
                 reference_error = str(exc)
+            try:
+                sp500_data, sp500_load = load_sp500_context(
+                    expected_latest_date=full_table.index[-1],
+                )
+                sp500_warning = sp500_load.warning
+            except Exception as exc:
+                sp500_data = pd.DataFrame()
+                sp500_warning = f"S&P500 상태 확인 실패: {exc}"
             history_display, chart_strength_details = annotate_signal_history_display(
                 ticker,
                 signal_cycles,
                 full_table,
                 chart_strength_reference,
                 reference_error=reference_error,
+                sp500_data=sp500_data,
             )
             classifications = load_sector_classifications([ticker])
             cycles_by_ticker = {ticker.upper(): signal_cycles}
@@ -2053,6 +2124,8 @@ class BuyPointApp(tk.Tk):
             performance_by_horizon,
             history_display,
             chart_strength_details,
+            sp500_data,
+            sp500_warning,
         )
 
     def _show_result(
@@ -2066,11 +2139,15 @@ class BuyPointApp(tk.Tk):
         performance_by_horizon: dict[int, pd.Series],
         history_display: pd.DataFrame,
         chart_strength_details: dict[tuple[str, str], dict[str, object]],
+        sp500_data: pd.DataFrame,
+        sp500_warning: str,
     ) -> None:
         self.current_ticker = ticker.upper()
         self.current_company = company.company
         self.current_chart_data = full_table.copy()
         self.current_signal_cycles = signal_cycles.reset_index(drop=True).copy()
+        self.current_sp500_data = sp500_data.copy()
+        self.current_sp500_warning = sp500_warning
         self.chart_strength_details.update(chart_strength_details)
         populate_table(
             self.buy_tree,
@@ -2196,6 +2273,7 @@ def load_closed_scenarios(
     if "현재 시총순위" not in data.columns and "순위" in data.columns:
         data = data.rename(columns={"순위": "현재 시총순위"})
     data = data.reindex(columns=CLOSED_SCENARIO_DISPLAY_COLUMNS)
+    data[SP500_STATUS_COLUMN] = data[SP500_STATUS_COLUMN].fillna("확인불가")
     for column in ("1차신호일", "2차신호일", "3차판정일"):
         data[column] = pd.to_datetime(data[column], errors="coerce")
     for column in RETURN_DISPLAY_COLUMNS:
@@ -2715,6 +2793,7 @@ def annotate_signal_history_display(
     full_table: pd.DataFrame,
     reference: pd.DataFrame | None,
     reference_error: str | None = None,
+    sp500_data: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, dict[tuple[str, str], dict[str, object]]]:
     """Apply the scanner's chart-strength method to one ticker's history."""
     display = signal_cycles_for_display(signal_cycles)
@@ -2729,6 +2808,12 @@ def annotate_signal_history_display(
     waiting = annotated["결과"].astype(str).str.contains("대기", na=False)
     annotated.loc[waiting, "차트 강도"] = "산정 대기"
     annotated.loc[waiting, "검토등급"] = ""
+    annotated = annotate_sp500_status(
+        annotated,
+        sp500_data if sp500_data is not None else pd.DataFrame(),
+        reference_date_columns=("3차판정일", "2차신호일", "1차신호일"),
+        pending_uses_latest=True,
+    )
     return annotated.reindex(columns=SIGNAL_HISTORY_DISPLAY_COLUMNS), details
 
 

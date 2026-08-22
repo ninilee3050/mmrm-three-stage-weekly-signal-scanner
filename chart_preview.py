@@ -9,8 +9,7 @@ from tkinter import messagebox, ttk
 import numpy as np
 import pandas as pd
 
-from data_provider import load_weekly_data
-from indicators import calculate_indicators
+from market_context import SP500_NAME, SP500_TICKER, load_sp500_context
 from ui_theme import configure_ui_fonts, normalize_theme, theme_palette
 
 
@@ -89,8 +88,8 @@ CANDLE_BODY_FILL = ""
 INDICATOR_BAR_WIDTH_RATIO = 0.84
 ZOOM_IN_FACTOR = 0.88
 ZOOM_OUT_FACTOR = 1.14
-BENCHMARK_TICKER = "^GSPC"
-BENCHMARK_NAME = "S&P 500"
+BENCHMARK_TICKER = SP500_TICKER
+BENCHMARK_NAME = SP500_NAME
 BENCHMARK_SIGNAL_OPACITY = 0.78
 BENCHMARK_SIGNAL_WIDTH = 2.2
 
@@ -476,11 +475,10 @@ class ChartPreviewWindow(tk.Toplevel):
 
     def _load_benchmark_worker(self) -> None:
         try:
-            raw = load_weekly_data(
-                BENCHMARK_TICKER,
-                include_current_week=True,
+            expected_latest = self.data.index[-1] if not self.data.empty else None
+            prepared, load_result = load_sp500_context(
+                expected_latest_date=expected_latest,
             )
-            prepared = calculate_indicators(raw)
         except Exception as exc:  # Network/provider errors are shown in the UI.
             try:
                 self.after(0, self._finish_benchmark_error, str(exc))
@@ -488,17 +486,20 @@ class ChartPreviewWindow(tk.Toplevel):
                 pass
             return
         try:
-            self.after(0, self._finish_benchmark_load, prepared)
+            self.after(0, self._finish_benchmark_load, prepared, load_result.warning)
         except tk.TclError:
             pass
 
-    def _finish_benchmark_load(self, data: pd.DataFrame) -> None:
+    def _finish_benchmark_load(self, data: pd.DataFrame, warning: str = "") -> None:
         self.benchmark_loading = False
         prepared = data.loc[:, CHART_COLUMNS].copy()
         prepared.index = _normalized_index(pd.DatetimeIndex(prepared.index))
         self.benchmark_data = prepared[~prepared.index.duplicated(keep="last")].sort_index()
         latest = self.benchmark_data.index[-1].strftime("%Y-%m-%d")
-        self.comparison_status_var.set(f"S&P 500 (^GSPC)  |  데이터 기준일 {latest}")
+        suffix = f"  |  {warning}" if warning else ""
+        self.comparison_status_var.set(
+            f"S&P 500 (^GSPC)  |  데이터 기준일 {latest}{suffix}"
+        )
         self.benchmark_button.configure(text="S&P 500 비교 닫기", state="normal")
         self._schedule_redraw()
 
@@ -521,6 +522,9 @@ class ChartPreviewWindow(tk.Toplevel):
         navigation_index: int | None = None,
         navigation_total: int = 0,
         chart_strength_summary: str = "",
+        sp500_summary: str = "",
+        sp500_data: pd.DataFrame | None = None,
+        sp500_warning: str = "",
     ) -> None:
         missing = [column for column in CHART_COLUMNS if column not in data.columns]
         if missing:
@@ -551,9 +555,24 @@ class ChartPreviewWindow(tk.Toplevel):
             f"{self.ticker}{name}  |  1차 {first}  ·  2차 {second}  ·  "
             f"3차 {third}  |  {outcome}{return_suffix}"
         )
-        self.chart_strength_var.set(
-            chart_strength_summary or "차트 강도: 해당 없음"
-        )
+        summary_parts = [chart_strength_summary or "차트 강도: 해당 없음"]
+        if sp500_summary:
+            summary_parts.append(sp500_summary)
+        self.chart_strength_var.set("  |  ".join(summary_parts))
+        if sp500_data is not None and not sp500_data.empty:
+            benchmark = sp500_data.loc[:, CHART_COLUMNS].copy()
+            benchmark.index = _normalized_index(pd.DatetimeIndex(benchmark.index))
+            self.benchmark_data = (
+                benchmark[~benchmark.index.duplicated(keep="last")].sort_index()
+            )
+            latest = self.benchmark_data.index[-1].strftime("%Y-%m-%d")
+            suffix = f"  |  {sp500_warning}" if sp500_warning else ""
+            self.comparison_status_var.set(
+                f"S&P 500 (^GSPC)  |  데이터 기준일 {latest}{suffix}"
+            )
+        else:
+            self.benchmark_data = pd.DataFrame()
+            self.comparison_status_var.set("S&P 500 데이터를 준비해 주세요.")
         self._set_navigation_state(navigation_index, navigation_total)
         self.title(f"{self.ticker} · MMRM 시나리오 차트 미리보기")
         self.deiconify()

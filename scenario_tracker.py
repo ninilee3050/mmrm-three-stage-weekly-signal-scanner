@@ -20,6 +20,7 @@ ACTIVE_SCENARIO_COLUMNS = [
     "마지막확인일",
     "데이터기준일",
     "데이터상태",
+    "S&P500 상태",
 ]
 
 SCAN_EVENT_COLUMNS = [
@@ -40,6 +41,7 @@ SCAN_EVENT_COLUMNS = [
     "MA_200",
     "MA20_50이격률",
     "데이터기준일",
+    "S&P500 상태",
 ]
 
 CLOSED_RESULT_COLUMNS = [
@@ -59,6 +61,7 @@ CLOSED_RESULT_COLUMNS = [
     "MA_200",
     "MA20_50이격률",
     "데이터기준일",
+    "S&P500 상태",
 ]
 
 _DATE_COLUMNS = {
@@ -81,6 +84,7 @@ def load_active_scenarios(
 
     data = pd.read_csv(path)
     data = data.reindex(columns=ACTIVE_SCENARIO_COLUMNS)
+    data["S&P500 상태"] = data["S&P500 상태"].fillna("확인불가")
     for column in _DATE_COLUMNS.intersection(data.columns):
         data[column] = pd.to_datetime(data[column], errors="coerce")
     return data
