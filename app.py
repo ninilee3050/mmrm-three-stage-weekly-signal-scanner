@@ -17,6 +17,7 @@ from chart_strength import (
     chart_strength_detail_key,
     load_chart_strength_reference,
 )
+from benchmark_analytics import add_benchmark_returns
 from chart_preview import ChartPreviewWindow
 from csv_io import describe_save_error, read_csv_flexible
 from data_provider import DataLoadError, load_weekly_data, normalize_ticker
@@ -29,8 +30,10 @@ from market_context import (
     sp500_summary_for_cycle,
 )
 from performance_analytics import (
+    SIGNAL_VALIDATION_COLUMNS,
     build_all_field_outputs,
     build_field_performance,
+    build_signal_validation,
     build_stock_ranking,
     build_ticker_performance,
     format_rate,
@@ -184,6 +187,10 @@ FIELD_DISPLAY_COLUMNS = [
     "매수 도달률",
     "분석 표본",
     "승률",
+    "기준 승률",
+    "기준 대비 초과",
+    "S&P 이긴 비율",
+    "S&P 대비 초과",
     "평균 손익률",
     "중앙값",
 ]
@@ -197,8 +204,22 @@ RANKING_DISPLAY_COLUMNS = [
     "중앙값",
     "최고",
     "최저",
+    "기준 대비 초과",
+    "S&P 대비 초과",
     "매수 도달률",
     "종합점수",
+]
+SIGNAL_VALIDATION_DISPLAY_COLUMNS = [
+    "분석 기간",
+    "구분",
+    "분석 표본",
+    "승률",
+    "기준 승률",
+    "기준 대비 초과",
+    "S&P 이긴 비율",
+    "S&P 대비 초과",
+    "평균 손익률",
+    "중앙값",
 ]
 
 
@@ -342,6 +363,9 @@ class BuyPointApp(tk.Tk):
         self.field_horizon_var = tk.StringVar(value="3개월")
         self.ranking_sort_var = tk.StringVar(value="종합점수")
         self.field_status_var = tk.StringVar(value="통합 스캔 후 분야별 성과를 확인할 수 있습니다.")
+        self.validation_status_var = tk.StringVar(
+            value="통합 스캔 후 신호 효과를 확인할 수 있습니다."
+        )
         self.closed_grade_filter_enabled_var = tk.BooleanVar(value=False)
         self.closed_grade_filter_var = tk.StringVar(value="우선검토")
         self.closed_score_filter_enabled_var = tk.BooleanVar(value=False)
@@ -816,12 +840,14 @@ class BuyPointApp(tk.Tk):
         closed_tab = ttk.Frame(self.scan_notebook)
         closed_scenario_tab = ttk.Frame(self.scan_notebook)
         field_tab = ttk.Frame(self.scan_notebook)
+        validation_tab = ttk.Frame(self.scan_notebook)
         failure_tab = ttk.Frame(self.scan_notebook)
         self.scan_notebook.add(event_tab, text="이번 스캔 신호")
         self.scan_notebook.add(active_tab, text="활성 시나리오")
         self.scan_notebook.add(closed_tab, text="이번 스캔 종료")
         self.scan_notebook.add(closed_scenario_tab, text="종료 시나리오")
         self.scan_notebook.add(field_tab, text="분야별 성과")
+        self.scan_notebook.add(validation_tab, text="신호 효과 검증")
         self.scan_notebook.add(failure_tab, text="오류")
 
         self.scan_tree = self._create_table(event_tab)
@@ -896,6 +922,7 @@ class BuyPointApp(tk.Tk):
         self.closed_scenario_tree = self._create_table(closed_scenario_table_frame)
         self._configure_history_tree_tags(self.closed_scenario_tree)
         self._build_field_performance_tab(field_tab)
+        self._build_signal_validation_tab(validation_tab)
         self.failure_tree = self._create_table(failure_tab)
 
         populate_table(self.scan_tree, pd.DataFrame(columns=SCAN_EVENT_DISPLAY_COLUMNS))
@@ -1193,7 +1220,14 @@ class BuyPointApp(tk.Tk):
         sort_combo = ttk.Combobox(
             controls,
             textvariable=self.ranking_sort_var,
-            values=("종합점수", "승률", "평균 손익률", "매수 도달률"),
+            values=(
+                "종합점수",
+                "승률",
+                "평균 손익률",
+                "매수 도달률",
+                "기준 대비 초과",
+                "S&P 대비 초과",
+            ),
             width=14,
             state="readonly",
         )
@@ -1216,6 +1250,57 @@ class BuyPointApp(tk.Tk):
         self.field_tree = self._create_table(field_frame)
         self.ranking_tree = self._create_table(ranking_frame)
         self.field_tree.bind("<<TreeviewSelect>>", self._on_field_select)
+
+    def _build_signal_validation_tab(self, parent: ttk.Frame) -> None:
+        ttk.Label(
+            parent,
+            text=(
+                "기준 승률: 같은 종목을 신호 앞뒤 1년 안의 아무 주에나 샀을 때의 승률입니다. "
+                "신호 승률이 이보다 높고 기준 대비 초과가 플러스여야 매수 타이밍 효과가 "
+                "있다고 볼 수 있습니다.  S&P 이긴 비율·S&P 대비 초과: 같은 주에 S&P 500을 "
+                "사서 같은 기간 들고 있었을 때와 비교한 값입니다.  현재 Top 100 종목 기준이라 "
+                "생존편향이 포함되어 있습니다."
+            ),
+            wraplength=720,
+            justify="left",
+            padding=(4, 4, 4, 2),
+        ).pack(fill="x")
+        ttk.Label(
+            parent,
+            textvariable=self.validation_status_var,
+            padding=(4, 0, 4, 4),
+        ).pack(fill="x")
+        table_frame = ttk.Frame(parent)
+        table_frame.pack(fill="both", expand=True)
+        self.validation_tree = self._create_table(table_frame)
+        populate_table(
+            self.validation_tree,
+            pd.DataFrame(columns=SIGNAL_VALIDATION_DISPLAY_COLUMNS),
+        )
+
+    def _refresh_signal_validation(self) -> None:
+        if not self.latest_cycles_by_ticker:
+            populate_table(
+                self.validation_tree,
+                pd.DataFrame(columns=SIGNAL_VALIDATION_DISPLAY_COLUMNS),
+            )
+            self.validation_status_var.set("통합 스캔 후 신호 효과를 확인할 수 있습니다.")
+            return
+        grade_by_key = {
+            key: str(detail.get("grade", ""))
+            for key, detail in self.chart_strength_details.items()
+        }
+        validation = build_signal_validation(self.latest_cycles_by_ticker, grade_by_key)
+        populate_table(self.validation_tree, signal_validation_for_display(validation))
+        date_text = (
+            self.latest_scan_date.strftime("%Y-%m-%d")
+            if self.latest_scan_date is not None
+            else "미정"
+        )
+        self.validation_status_var.set(
+            f"분석 기준일 {date_text} / {len(self.latest_cycles_by_ticker)}종목의 "
+            "확정된 매수 성공 사례 기준"
+        )
 
     def _create_top100_table(self, parent: tk.Widget) -> ttk.Treeview:
         frame = ttk.Frame(parent)
@@ -1307,6 +1392,7 @@ class BuyPointApp(tk.Tk):
         self.scan_tree.delete(*self.scan_tree.get_children())
         self.closed_tree.delete(*self.closed_tree.get_children())
         self.field_tree.delete(*self.field_tree.get_children())
+        self.validation_tree.delete(*self.validation_tree.get_children())
         self.ranking_tree.delete(*self.ranking_tree.get_children())
         self.failure_tree.delete(*self.failure_tree.get_children())
         self.latest_scan_events = pd.DataFrame(columns=SCAN_EVENT_COLUMNS)
@@ -1398,6 +1484,14 @@ class BuyPointApp(tk.Tk):
             active_rows.extend(
                 preserve_failed_active_rows(previous_active, failed_tickers)
             )
+            cycles_by_ticker = {
+                ticker: add_benchmark_returns(
+                    cycles,
+                    full_tables_by_ticker[ticker],
+                    sp500_data,
+                )
+                for ticker, cycles in cycles_by_ticker.items()
+            }
 
             events_df = _sorted_frame(
                 events,
@@ -1681,6 +1775,7 @@ class BuyPointApp(tk.Tk):
         self._refresh_closed_scenario_view()
         populate_table(self.failure_tree, failures)
         self._refresh_field_analytics(reset_selection=True)
+        self._refresh_signal_validation()
 
         failed_tickers = ", ".join(failures["티커"].tolist()[:8]) if not failures.empty else ""
         failed_suffix = f": {failed_tickers}" if failed_tickers else ""
@@ -2173,7 +2268,13 @@ class BuyPointApp(tk.Tk):
                 sp500_data=sp500_data,
             )
             classifications = load_sector_classifications([ticker])
-            cycles_by_ticker = {ticker.upper(): signal_cycles}
+            cycles_by_ticker = {
+                ticker.upper(): add_benchmark_returns(
+                    signal_cycles,
+                    full_table,
+                    sp500_data,
+                )
+            }
             performance_by_horizon = {
                 horizon: build_ticker_performance(
                     [company],
@@ -2252,13 +2353,20 @@ class BuyPointApp(tk.Tk):
             f"매수 도달률 {format_reach_rate(base['매수 도달률'], base['매수 건수'], base['종료 사이클'])}"
         )
         horizon_text = []
+        benchmark_text = []
         for horizon in (3, 6, 9, 12):
             row = performance_by_horizon[horizon]
             horizon_text.append(
                 f"{horizon}개월 승률 "
                 f"{format_rate(row['승률'], row['승리'], row['분석 표본'])}"
             )
-        self.ticker_return_summary_var.set("  |  ".join(horizon_text))
+            benchmark_text.append(
+                f"{horizon}개월 기준 대비 {_format_excess(row['기준 대비 초과'])}"
+                f" · S&P 대비 {_format_excess(row['S&P 대비 초과'])}"
+            )
+        self.ticker_return_summary_var.set(
+            "  |  ".join(horizon_text) + "\n" + "  |  ".join(benchmark_text)
+        )
         self.search_button.configure(state="normal")
         if self._take_queued_search(ticker):
             # The pending chart request belongs to the queued ticker.
@@ -2840,6 +2948,7 @@ def field_performance_for_display(data: pd.DataFrame) -> pd.DataFrame:
         lambda row: format_rate(row["승률"], row["승리"], row["분석 표본"]),
         axis=1,
     )
+    _format_benchmark_rates(display)
     return display.reindex(columns=FIELD_DISPLAY_COLUMNS)
 
 
@@ -2858,6 +2967,42 @@ def ranking_for_display(data: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
     return display.reindex(columns=RANKING_DISPLAY_COLUMNS)
+
+
+def signal_validation_for_display(data: pd.DataFrame) -> pd.DataFrame:
+    display = data.copy()
+    if display.empty:
+        return pd.DataFrame(columns=SIGNAL_VALIDATION_DISPLAY_COLUMNS)
+    display["승률"] = display.apply(
+        lambda row: format_rate(row["승률"], row["승리"], row["분석 표본"]),
+        axis=1,
+    )
+    _format_benchmark_rates(display)
+    return display.reindex(columns=SIGNAL_VALIDATION_DISPLAY_COLUMNS)
+
+
+def _format_benchmark_rates(display: pd.DataFrame) -> None:
+    """Turn the baseline win rates into text in place (skipped when absent)."""
+    if "기준 승률" in display.columns:
+        display["기준 승률"] = display["기준 승률"].map(
+            lambda value: "미산출" if pd.isna(value) else f"{float(value):.1f}%"
+        )
+    required = {"S&P 이긴 비율", "S&P 이긴 건수", "S&P 비교 표본"}
+    if not required.issubset(display.columns):
+        return
+    display["S&P 이긴 비율"] = display.apply(
+        lambda row: format_rate(
+            row["S&P 이긴 비율"], row["S&P 이긴 건수"], row["S&P 비교 표본"]
+        ),
+        axis=1,
+    )
+
+
+def _format_excess(value: object) -> str:
+    """Excess return in percentage points, e.g. "+1.23%p"."""
+    if value is None or pd.isna(value):
+        return "미산출"
+    return f"{float(value):+.2f}%p"
 
 
 def _horizon_months(value: str) -> int:
@@ -3167,6 +3312,8 @@ def _format_value(value: object, column: str = "") -> str:
         value, (int, float)
     ):
         return f"{value:+.2f}%"
+    if column.endswith("초과") and isinstance(value, (int, float)):
+        return _format_excess(value)
     if column == "종합점수" and isinstance(value, (int, float)):
         return f"{value:.2f}"
     if isinstance(value, float):

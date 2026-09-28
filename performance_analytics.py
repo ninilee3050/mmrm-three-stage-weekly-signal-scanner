@@ -4,6 +4,8 @@ from collections.abc import Mapping, Sequence
 
 import pandas as pd
 
+from benchmark_analytics import benchmark_metrics, empty_benchmark_metrics
+from chart_strength import chart_strength_detail_key
 from market_cap_provider import MarketCapCompany
 
 
@@ -14,6 +16,15 @@ HORIZON_RETURN_COLUMNS = {
     9: ("Return9M", "Return9MStatus"),
     12: ("Return12M", "Return12MStatus"),
 }
+BENCHMARK_COLUMNS = [
+    "S&P 비교 표본",
+    "S&P 이긴 건수",
+    "S&P 이긴 비율",
+    "S&P 대비 초과",
+    "기준 비교 표본",
+    "기준 승률",
+    "기준 대비 초과",
+]
 CLOSED_OUTCOMES = {
     "매수 성공",
     "실패",
@@ -37,6 +48,7 @@ TICKER_PERFORMANCE_COLUMNS = [
     "중앙값",
     "최고",
     "최저",
+    *BENCHMARK_COLUMNS,
 ]
 
 FIELD_PERFORMANCE_COLUMNS = [
@@ -50,6 +62,7 @@ FIELD_PERFORMANCE_COLUMNS = [
     "승률",
     "평균 손익률",
     "중앙값",
+    *BENCHMARK_COLUMNS,
 ]
 
 RANKING_COLUMNS = [
@@ -67,6 +80,7 @@ RANKING_COLUMNS = [
     "최저",
     "매수 도달률",
     "종합점수",
+    *BENCHMARK_COLUMNS,
 ]
 
 
@@ -169,6 +183,8 @@ def build_stock_ranking(
         "승률": "승률",
         "평균 손익률": "평균 손익률",
         "매수 도달률": "매수 도달률",
+        "S&P 대비 초과": "S&P 대비 초과",
+        "기준 대비 초과": "기준 대비 초과",
     }.get(sort_by, "종합점수")
     selected["_정렬값"] = selected[sort_column].where(selected["분석 표본"] > 0)
     selected = selected.sort_values(
@@ -231,6 +247,71 @@ def build_all_field_outputs(
     return sector_output, industry_output, ranking_output
 
 
+PRIORITY_GRADE = "우선검토"
+GENERAL_GRADE = "일반검토"
+VALIDATION_GROUPS = ("전체 매수 성공", "차트 강도 산정분", PRIORITY_GRADE, GENERAL_GRADE)
+SIGNAL_VALIDATION_COLUMNS = [
+    "분석 기간",
+    "구분",
+    "분석 표본",
+    "승리",
+    "승률",
+    "기준 승률",
+    "기준 대비 초과",
+    "S&P 이긴 비율",
+    "S&P 대비 초과",
+    "평균 손익률",
+    "중앙값",
+    "S&P 비교 표본",
+    "S&P 이긴 건수",
+    "기준 비교 표본",
+]
+
+
+def build_signal_validation(
+    cycles_by_ticker: Mapping[str, pd.DataFrame],
+    grade_by_key: Mapping[tuple[str, str], str],
+) -> pd.DataFrame:
+    """Compare buy signals with their baselines, overall and by chart-strength grade.
+
+    ``grade_by_key`` maps ``chart_strength_detail_key(ticker, 3차판정일)`` to
+    the review grade shown in the app.
+    """
+    frames = []
+    for ticker, cycles in cycles_by_ticker.items():
+        if cycles.empty or "Outcome" not in cycles.columns:
+            continue
+        bought = cycles[cycles["Outcome"] == "매수 성공"].copy()
+        if bought.empty:
+            continue
+        bought["_grade"] = [
+            grade_by_key.get(chart_strength_detail_key(ticker, date), "")
+            for date in bought["ThirdDecisionDate"]
+        ]
+        frames.append(bought)
+    combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    rows = []
+    for horizon in HORIZON_MONTHS:
+        for group in VALIDATION_GROUPS:
+            if combined.empty:
+                subset = combined
+            elif group == "전체 매수 성공":
+                subset = combined
+            elif group == "차트 강도 산정분":
+                subset = combined[combined["_grade"].isin({PRIORITY_GRADE, GENERAL_GRADE})]
+            else:
+                subset = combined[combined["_grade"] == group]
+            rows.append(
+                {
+                    "분석 기간": f"{horizon}개월",
+                    "구분": group,
+                    **_cycle_metrics(subset, horizon),
+                }
+            )
+    return pd.DataFrame(rows).reindex(columns=SIGNAL_VALIDATION_COLUMNS)
+
+
 def format_rate(value: object, wins: object, sample: object) -> str:
     sample_count = _safe_int(sample)
     win_count = _safe_int(wins)
@@ -280,6 +361,7 @@ def _cycle_metrics(cycles: pd.DataFrame, horizon_months: int) -> dict[str, objec
         "중앙값": values.median() if sample_count else float("nan"),
         "최고": values.max() if sample_count else float("nan"),
         "최저": values.min() if sample_count else float("nan"),
+        **benchmark_metrics(bought, values, horizon_months),
     }
 
 
@@ -295,6 +377,7 @@ def _empty_metrics() -> dict[str, object]:
         "중앙값": float("nan"),
         "최고": float("nan"),
         "최저": float("nan"),
+        **empty_benchmark_metrics(),
     }
 
 

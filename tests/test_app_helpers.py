@@ -840,3 +840,36 @@ def test_median_max_min_returns_are_shown_as_percentages() -> None:
     assert _format_value(12.3456, "중앙값") == "+12.35%"
     assert _format_value(40.0, "최고") == "+40.00%"
     assert _format_value(-8.5, "최저") == "-8.50%"
+
+
+def test_signal_validation_view_formats_baselines() -> None:
+    from app import signal_validation_for_display
+
+    validation = pd.DataFrame(
+        [
+            {
+                "분석 기간": "3개월",
+                "구분": "우선검토",
+                "분석 표본": 4,
+                "승리": 3,
+                "승률": 75.0,
+                "기준 승률": 56.66,
+                "기준 대비 초과": 1.234,
+                "S&P 이긴 비율": 50.0,
+                "S&P 대비 초과": -0.5,
+                "평균 손익률": 4.0,
+                "중앙값": 3.0,
+                "S&P 비교 표본": 4,
+                "S&P 이긴 건수": 2,
+                "기준 비교 표본": 4,
+            }
+        ]
+    )
+
+    display = signal_validation_for_display(validation)
+
+    assert display.loc[0, "승률"] == "75.0% (3/4)"
+    assert display.loc[0, "기준 승률"] == "56.7%"
+    assert display.loc[0, "S&P 이긴 비율"] == "50.0% (2/4)"
+    assert _format_value(display.loc[0, "기준 대비 초과"], "기준 대비 초과") == "+1.23%p"
+    assert _format_value(display.loc[0, "S&P 대비 초과"], "S&P 대비 초과") == "-0.50%p"
