@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from csv_io import read_csv_flexible
 from market_cap_provider import MarketCapCompany
 
 
@@ -82,7 +83,7 @@ def load_active_scenarios(
     if not path.exists():
         return pd.DataFrame(columns=ACTIVE_SCENARIO_COLUMNS)
 
-    data = pd.read_csv(path)
+    data = read_csv_flexible(path)
     data = data.reindex(columns=ACTIVE_SCENARIO_COLUMNS)
     data["S&P500 상태"] = data["S&P500 상태"].fillna("확인불가")
     for column in _DATE_COLUMNS.intersection(data.columns):

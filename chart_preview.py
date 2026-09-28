@@ -490,7 +490,18 @@ class ChartPreviewWindow(tk.Toplevel):
         except tk.TclError:
             pass
 
+    def _window_alive(self) -> bool:
+        try:
+            return bool(self.winfo_exists())
+        except tk.TclError:
+            return False
+
     def _finish_benchmark_load(self, data: pd.DataFrame, warning: str = "") -> None:
+        if not self._window_alive():
+            return
+        if data.empty:
+            self._finish_benchmark_error("S&P 500 데이터가 비어 있습니다.")
+            return
         self.benchmark_loading = False
         prepared = data.loc[:, CHART_COLUMNS].copy()
         prepared.index = _normalized_index(pd.DatetimeIndex(prepared.index))
@@ -504,6 +515,8 @@ class ChartPreviewWindow(tk.Toplevel):
         self._schedule_redraw()
 
     def _finish_benchmark_error(self, details: str) -> None:
+        if not self._window_alive():
+            return
         self.benchmark_loading = False
         self.comparison_status_var.set("S&P 500 데이터를 불러오지 못했습니다.")
         self.benchmark_button.configure(text="S&P 500 다시 시도", state="normal")
@@ -583,6 +596,9 @@ class ChartPreviewWindow(tk.Toplevel):
     def _close(self) -> None:
         callback = self._on_close_callback
         self._on_close_callback = None
+        if self._redraw_job is not None:
+            self.after_cancel(self._redraw_job)
+            self._redraw_job = None
         self.destroy()
         if callback is not None:
             callback()
@@ -597,6 +613,8 @@ class ChartPreviewWindow(tk.Toplevel):
 
     def _redraw(self) -> None:
         self._redraw_job = None
+        if not self._window_alive():
+            return
         self.canvas.delete("all")
         if self.data.empty or self.canvas.winfo_width() < 200:
             self._redraw_benchmark()

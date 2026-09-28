@@ -247,3 +247,15 @@ def test_resilient_weekly_loader_uses_valid_stale_cache_when_refresh_fails(
     assert result.data.index[-1] == pd.Timestamp("2026-07-27")
     assert "저장 데이터 사용" in result.warning
     assert "2026-07-27" in result.warning
+
+
+def test_weekly_bar_is_in_progress_until_friday_close_in_new_york() -> None:
+    from data_provider import weekly_bar_in_progress
+
+    week = pd.Timestamp("2026-09-21")
+
+    assert weekly_bar_in_progress(week, now=pd.Timestamp("2026-09-25 15:59"))
+    assert not weekly_bar_in_progress(week, now=pd.Timestamp("2026-09-25 16:00"))
+    # Saturday 04:00 in Korea is still Friday afternoon in New York.
+    korea_saturday = pd.Timestamp("2026-09-26 04:00", tz="Asia/Seoul")
+    assert weekly_bar_in_progress(week, now=korea_saturday)

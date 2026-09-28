@@ -15,6 +15,7 @@ import pandas as pd
 DATA_DIR = Path("data")
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+US_MARKET_TIMEZONE = "America/New_York"
 
 
 class DataLoadError(RuntimeError):
@@ -350,6 +351,25 @@ def _resample_daily_to_weekly(
     if include_current_week:
         return weekly
     return _drop_incomplete_current_week(weekly)
+
+
+def weekly_bar_in_progress(
+    week_start: pd.Timestamp | str,
+    now: pd.Timestamp | None = None,
+) -> bool:
+    """Return True while the US trading week labelled ``week_start`` is still open.
+
+    The week closes at Friday 16:00 New York time.  ``now`` defaults to the
+    current time; a naive ``now`` is read as New York time.
+    """
+    if now is None:
+        now = pd.Timestamp.now(tz=US_MARKET_TIMEZONE)
+    elif now.tzinfo is None:
+        now = now.tz_localize(US_MARKET_TIMEZONE)
+    week_close = (
+        pd.Timestamp(week_start).normalize() + pd.Timedelta(days=4, hours=16)
+    ).tz_localize(US_MARKET_TIMEZONE)
+    return bool(now < week_close)
 
 
 def _monday_week_start(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
