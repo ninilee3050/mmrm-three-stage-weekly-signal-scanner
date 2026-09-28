@@ -8,7 +8,9 @@ from market_cap_provider import MarketCapCompany
 from scanner import scan_signal_cycles
 from scenario_tracker import (
     ACTIVE_SCENARIO_COLUMNS,
+    latest_scan_date,
     load_active_scenarios,
+    market_today,
     merge_scan_universe,
     preserve_failed_active_rows,
     save_active_scenarios,
@@ -215,3 +217,144 @@ def test_failed_active_ticker_is_preserved_for_next_scan() -> None:
     assert len(preserved) == 1
     assert preserved[0]["현재상태"] == "3차 신호 대기"
     assert preserved[0]["데이터상태"] == "갱신 실패"
+
+
+def test_third_signal_after_midweek_scan_is_reported_on_next_week_scan() -> None:
+    # Previous scan ran on Wednesday of the third-signal week, before Friday's
+    # close completed the signal.  The next scan runs in the following week.
+    data = make_frame(successful_cycle_setup())
+    cycles, full = scan_signal_cycles(data)
+    third_week = pd.Timestamp("2024-02-05")
+    previous = pd.Series(
+        {
+            "현재상태": "3차 신호 대기",
+            "1차신호일": pd.Timestamp("2024-01-08"),
+            "2차신호일": pd.Timestamp("2024-01-22"),
+            "마지막확인일": third_week + pd.Timedelta(days=2),
+        }
+    )
+
+    events, active, closed = summarize_ticker_cycles(
+        company(),
+        cycles,
+        full,
+        scan_date=third_week + pd.Timedelta(days=9),
+        previous_active=previous,
+    )
+
+    assert [event["단계"] for event in events] == ["3차 신호"]
+    assert events[0]["결과"] == "매수 성공"
+    assert events[0]["신호구분"] == "미확인 기간"
+    assert active is None
+    assert len(closed) == 1
+
+
+def test_weekend_scan_after_same_week_scan_reports_completed_third_signal() -> None:
+    # Last scan was Monday morning in Korea (still the prior US week); this
+    # scan is the following weekend in US time.
+    data = make_frame(successful_cycle_setup())
+    cycles, full = scan_signal_cycles(data)
+    previous = pd.Series(
+        {
+            "현재상태": "3차 신호 대기",
+            "1차신호일": pd.Timestamp("2024-01-08"),
+            "2차신호일": pd.Timestamp("2024-01-22"),
+            "마지막확인일": pd.Timestamp("2024-02-04"),
+        }
+    )
+
+    events, _, closed = summarize_ticker_cycles(
+        company(),
+        cycles,
+        full,
+        scan_date=pd.Timestamp("2024-02-11"),
+        previous_active=previous,
+    )
+
+    assert [event["단계"] for event in events] == ["3차 신호"]
+    assert len(closed) == 1
+
+
+def test_known_first_signal_is_not_repeated_in_a_later_week() -> None:
+    data = make_frame(first_signal_setup())
+    cycles, full = scan_signal_cycles(data)
+    first_week = data.index[1]
+    previous = pd.Series(
+        {
+            "현재상태": "2차 신호 대기",
+            "1차신호일": first_week,
+            "2차신호일": pd.NaT,
+            "마지막확인일": first_week + pd.Timedelta(days=4),
+        }
+    )
+
+    events, active, _ = summarize_ticker_cycles(
+        company(),
+        cycles,
+        full,
+        scan_date=first_week + pd.Timedelta(days=9),
+        previous_active=previous,
+    )
+
+    assert events == []
+    assert active is not None
+    assert active["현재상태"] == "2차 신호 대기"
+
+
+def test_untracked_ticker_reports_cycle_that_began_after_last_scan() -> None:
+    data = make_frame(first_signal_setup())
+    cycles, full = scan_signal_cycles(data)
+    first_week = data.index[1]
+
+    events, active, _ = summarize_ticker_cycles(
+        company(),
+        cycles,
+        full,
+        scan_date=first_week + pd.Timedelta(days=8),
+        last_scan_date=first_week + pd.Timedelta(days=2),
+    )
+
+    assert [event["단계"] for event in events] == ["1차 신호"]
+    assert events[0]["신호구분"] == "미확인 기간"
+    assert active is not None
+
+
+def test_untracked_ticker_does_not_repeat_cycle_older_than_last_scan() -> None:
+    data = make_frame(successful_cycle_setup())
+    cycles, full = scan_signal_cycles(data)
+    third_week = pd.Timestamp("2024-02-05")
+
+    events, active, closed = summarize_ticker_cycles(
+        company(),
+        cycles,
+        full,
+        scan_date=third_week + pd.Timedelta(days=8),
+        last_scan_date=third_week + pd.Timedelta(days=4),
+    )
+
+    assert events == []
+    assert active is None
+    assert closed == []
+
+
+def test_latest_scan_date_uses_most_recent_check() -> None:
+    active = pd.DataFrame(
+        {
+            "티커": ["A", "B", "C"],
+            "마지막확인일": [
+                pd.Timestamp("2024-01-05"),
+                pd.Timestamp("2024-01-12"),
+                pd.NaT,
+            ],
+        }
+    )
+
+    assert latest_scan_date(active) == pd.Timestamp("2024-01-12")
+    assert latest_scan_date(pd.DataFrame(columns=ACTIVE_SCENARIO_COLUMNS)) is None
+
+
+def test_market_today_is_naive_normalized_date() -> None:
+    today = market_today()
+
+    assert today.tzinfo is None
+    assert today == today.normalize()
