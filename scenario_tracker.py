@@ -133,18 +133,35 @@ def summarize_ticker_cycles(
     full_table: pd.DataFrame,
     scan_date: pd.Timestamp | str,
     previous_active: pd.Series | None = None,
+    last_scan_date: pd.Timestamp | str | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object] | None, list[dict[str, object]]]:
+    """Summarize one ticker's cycles into new events, an active row and closed rows.
+
+    ``last_scan_date`` is the most recent scan date across the whole previous
+    active state (see ``latest_scan_date``).  It lets a ticker that was not
+    being tracked still report a cycle that started after that scan.
+    """
     if full_table.empty:
         return [], None, []
 
     week_start = _week_start(scan_date)
     data_date = pd.Timestamp(full_table.index[-1]).normalize()
+    has_previous = previous_active is not None
     previous_first = _as_timestamp(
-        previous_active.get("1차신호일") if previous_active is not None else None
+        previous_active.get("1차신호일") if has_previous else None
     )
+    previous_second = _as_timestamp(
+        previous_active.get("2차신호일") if has_previous else None
+    )
+    previous_state = str(previous_active.get("현재상태", "")) if has_previous else ""
     last_checked = _as_timestamp(
-        previous_active.get("마지막확인일") if previous_active is not None else None
+        previous_active.get("마지막확인일") if has_previous else None
     )
+    # Signals are labelled with the Monday of their weekly bar, while scan
+    # dates are real calendar days, so compare both on a weekly basis.
+    last_checked_week = _week_start(last_checked) if last_checked is not None else None
+    last_scan_date = _as_timestamp(last_scan_date)
+    last_scan_week = _week_start(last_scan_date) if last_scan_date is not None else None
 
     events: list[dict[str, object]] = []
     closed_results: list[dict[str, object]] = []
@@ -168,21 +185,30 @@ def summarize_ticker_cycles(
         )
         for stage, field in signal_fields:
             signal_date = _as_timestamp(cycle.get(field))
+            if signal_date is None:
+                continue
+            same_tracked_cycle = has_previous and previous_first == first_date
+            already_known = same_tracked_cycle and (
+                stage == "1차 신호"
+                or (stage == "2차 신호" and signal_date == previous_second)
+            )
             should_report = _should_report_signal(
                 signal_date,
+                first_date=first_date,
                 week_start=week_start,
-                last_checked=last_checked,
-                has_previous=previous_active is not None,
+                has_previous=has_previous,
+                already_known=already_known,
+                last_checked_week=last_checked_week,
+                last_scan_week=last_scan_week,
             )
-            rule_reassessment = (
-                not should_report
-                and stage == "2차 폐기"
-                and previous_active is not None
-                and str(previous_active.get("현재상태", "")) == "3차 신호 대기"
-                and previous_first == first_date
-            )
-            if not should_report and not rule_reassessment:
+            if not should_report:
                 continue
+            rule_reassessment = (
+                stage == "2차 폐기"
+                and same_tracked_cycle
+                and previous_state == "3차 신호 대기"
+                and signal_date != week_start
+            )
 
             key = (stage, signal_date)
             if key in event_keys:
@@ -305,18 +331,49 @@ def _ma20_over_ma50_spread_pct(ma_20: object, ma_50: object) -> float:
 
 
 def _should_report_signal(
-    signal_date: pd.Timestamp | None,
+    signal_date: pd.Timestamp,
+    first_date: pd.Timestamp | None,
     week_start: pd.Timestamp,
-    last_checked: pd.Timestamp | None,
     has_previous: bool,
+    already_known: bool,
+    last_checked_week: pd.Timestamp | None,
+    last_scan_week: pd.Timestamp | None,
 ) -> bool:
-    if signal_date is None:
-        return False
     if signal_date == week_start:
         return True
-    if not has_previous:
-        return False
-    return last_checked is None or signal_date > last_checked
+    if has_previous:
+        # The week of the last check is included because that scan may have
+        # seen only part of the week; known 1st/2nd signals are not repeated.
+        if already_known:
+            return False
+        return last_checked_week is None or signal_date >= last_checked_week
+    # An untracked ticker has no cycle the previous scan knew about, unless
+    # that cycle already closed.  Only report cycles that began afterwards.
+    return (
+        last_scan_week is not None
+        and first_date is not None
+        and first_date >= last_scan_week
+        and signal_date >= last_scan_week
+    )
+
+
+def latest_scan_date(active_scenarios: pd.DataFrame) -> pd.Timestamp | None:
+    """Return the most recent 마지막확인일 stored in the active state."""
+    if active_scenarios.empty or "마지막확인일" not in active_scenarios.columns:
+        return None
+    dates = pd.to_datetime(active_scenarios["마지막확인일"], errors="coerce").dropna()
+    if dates.empty:
+        return None
+    return pd.Timestamp(dates.max()).normalize()
+
+
+def market_today() -> pd.Timestamp:
+    """Today's date in US market time (New York), as a naive timestamp.
+
+    Weekly bars follow the US trading week.  Using the local clock in Korea
+    would start the new week on Monday morning, before the US week opens.
+    """
+    return pd.Timestamp.now(tz="America/New_York").tz_localize(None).normalize()
 
 
 def _row_at(data: pd.DataFrame, date: pd.Timestamp) -> pd.Series:

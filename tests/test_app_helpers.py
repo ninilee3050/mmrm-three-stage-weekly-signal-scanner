@@ -800,3 +800,26 @@ def test_analytics_outputs_use_stable_and_dated_names(tmp_path) -> None:
         "MMRM_field_stock_rankings_2026-07-26.csv",
     ]
     assert all(path.exists() for path in (*stable, *dated))
+
+
+def _search_state(requested: str, busy_request: bool) -> SimpleNamespace:
+    return SimpleNamespace(
+        search_requested_while_busy=busy_request,
+        ticker_var=SimpleNamespace(get=lambda: requested),
+    )
+
+
+def test_ticker_clicked_during_search_is_queued() -> None:
+    from app import BuyPointApp
+
+    state = _search_state("msft", busy_request=True)
+
+    assert BuyPointApp._take_queued_search(state, "AAPL") is True
+    assert state.search_requested_while_busy is False
+
+
+def test_same_ticker_clicked_during_search_is_not_rerun() -> None:
+    from app import BuyPointApp
+
+    assert BuyPointApp._take_queued_search(_search_state("AAPL", True), "aapl") is False
+    assert BuyPointApp._take_queued_search(_search_state("MSFT", False), "AAPL") is False

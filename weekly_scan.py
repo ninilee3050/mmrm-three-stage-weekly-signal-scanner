@@ -15,7 +15,9 @@ from scenario_tracker import (
     ACTIVE_SCENARIO_COLUMNS,
     CLOSED_RESULT_COLUMNS,
     SCAN_EVENT_COLUMNS,
+    latest_scan_date,
     load_active_scenarios,
+    market_today,
     merge_scan_universe,
     preserve_failed_active_rows,
     save_active_scenarios,
@@ -31,7 +33,7 @@ SCAN_FAILURE_COLUMNS = ["순위", "티커", "회사명", "시가총액", "오류
 
 def main() -> int:
     try:
-        scan_date = pd.Timestamp.today().normalize()
+        scan_date = market_today()
         previous_active = load_active_scenarios()
         print("미국 시가총액 Top 100 목록과 활성 시나리오를 불러옵니다...")
         top100_companies = fetch_us_top_market_cap(limit=TOP100_LIMIT)
@@ -164,6 +166,7 @@ def scan_companies(
         str(row["티커"]).upper(): row
         for _, row in previous_active.iterrows()
     }
+    last_scan_date = latest_scan_date(previous_active)
 
     for index, company in enumerate(companies, start=1):
         print(f"{progress_label}... {index}/{len(companies)} {company.ticker}")
@@ -181,6 +184,7 @@ def scan_companies(
                 full_table,
                 scan_date,
                 previous_active=previous_by_ticker.get(company.ticker.upper()),
+                last_scan_date=last_scan_date,
             )
             events.extend(ticker_events)
             closed_results.extend(ticker_closed)

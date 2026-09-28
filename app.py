@@ -41,7 +41,9 @@ from scenario_tracker import (
     ACTIVE_SCENARIO_COLUMNS,
     CLOSED_RESULT_COLUMNS,
     SCAN_EVENT_COLUMNS,
+    latest_scan_date,
     load_active_scenarios,
+    market_today,
     merge_scan_universe,
     preserve_failed_active_rows,
     save_active_scenarios,
@@ -373,6 +375,7 @@ class BuyPointApp(tk.Tk):
         self._syncing_chart_history_selection = False
         self.open_chart_after_search = False
         self.pending_chart_first_signal_date: pd.Timestamp | None = None
+        self.search_requested_while_busy = False
         self.chart_strength_tooltip = ChartStrengthTooltip(
             self,
             self.ui_font_family,
@@ -1324,7 +1327,7 @@ class BuyPointApp(tk.Tk):
                 sp500_data = pd.DataFrame()
                 sp500_warning = f"S&P500 상태 확인 실패: {exc}"
 
-            scan_date = pd.Timestamp.today().normalize()
+            scan_date = market_today()
             scan_universe = merge_scan_universe(companies, previous_active)
             (
                 events,
@@ -1542,6 +1545,7 @@ class BuyPointApp(tk.Tk):
             str(row["티커"]).upper(): row
             for _, row in previous_active.iterrows()
         }
+        last_scan_date = latest_scan_date(previous_active)
 
         for index, company in enumerate(companies, start=1):
             self.after(
@@ -1565,6 +1569,7 @@ class BuyPointApp(tk.Tk):
                     full_table,
                     scan_date,
                     previous_active=previous_by_ticker.get(company.ticker.upper()),
+                    last_scan_date=last_scan_date,
                 )
                 events.extend(ticker_events)
                 closed_results.extend(ticker_closed)
@@ -2032,7 +2037,10 @@ class BuyPointApp(tk.Tk):
 
     def run_search(self) -> None:
         if str(self.search_button.cget("state")) == "disabled":
+            # A search is running; the latest request runs once it finishes.
+            self.search_requested_while_busy = True
             return
+        self.search_requested_while_busy = False
 
         try:
             ticker = normalize_ticker(self.ticker_var.get())
@@ -2185,6 +2193,10 @@ class BuyPointApp(tk.Tk):
             )
         self.ticker_return_summary_var.set("  |  ".join(horizon_text))
         self.search_button.configure(state="normal")
+        if self._take_queued_search(ticker):
+            # The pending chart request belongs to the queued ticker.
+            self.run_search()
+            return
 
         target_cycle = self._cycle_for_first_signal_date(
             self.pending_chart_first_signal_date
@@ -2219,9 +2231,24 @@ class BuyPointApp(tk.Tk):
         self.ticker_cycle_summary_var.set("성과를 계산하지 못했습니다.")
         self.ticker_return_summary_var.set("")
         self.search_button.configure(state="normal")
-        self.open_chart_after_search = False
-        self.pending_chart_first_signal_date = None
+        queued = self._take_queued_search(ticker)
+        if not queued:
+            self.open_chart_after_search = False
+            self.pending_chart_first_signal_date = None
         messagebox.showerror("오류", message)
+        if queued:
+            self.run_search()
+
+    def _take_queued_search(self, finished_ticker: str) -> bool:
+        """Return True when a different ticker was requested during a search."""
+        if not self.search_requested_while_busy:
+            return False
+        self.search_requested_while_busy = False
+        try:
+            requested = normalize_ticker(self.ticker_var.get())
+        except ValueError:
+            return False
+        return requested != finished_ticker.upper()
 
 
 def save_outputs(
