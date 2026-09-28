@@ -966,3 +966,30 @@ def test_history_rows_are_newest_first_and_map_back_to_cycles() -> None:
     assert BuyPointApp._history_cycle_position(window, "row_oldest") == 0
     BuyPointApp._select_history_position(window, 0)
     assert selected == ["row_oldest"]
+
+
+def test_window_fits_small_screens_and_keeps_full_size_on_wide_ones() -> None:
+    from app import fit_window_to_screen
+
+    assert fit_window_to_screen(3501, 820, 5120, 1440) == (3501, 820)
+    assert fit_window_to_screen(3501, 820, 1920, 1080) == (1880, 820)
+    assert fit_window_to_screen(3501, 820, 1366, 768) == (1326, 688)
+    assert fit_window_to_screen(3501, 820, 800, 600) == (960, 600)
+
+
+def test_default_dividers_split_by_content_width() -> None:
+    from app import default_sash_positions
+
+    assert default_sash_positions(1800, False, 490, 1000, 1500) == [720]
+    top100_open = default_sash_positions(1300, True, 490, 1000, 1500)
+    assert top100_open[0] == 286  # Top 100 takes at most ~22% on small screens
+    assert top100_open[1] == 286 + int((1300 - 286) * 0.4)
+    assert default_sash_positions(3450, True, 490, 1000, 1500)[0] == 490
+
+
+def test_cards_wrap_to_two_rows_only_when_narrow() -> None:
+    from app import card_grid_columns
+
+    assert card_grid_columns(900, 4, 170) == 4
+    assert card_grid_columns(600, 4, 170) == 2
+    assert card_grid_columns(100, 2, 170) == 2

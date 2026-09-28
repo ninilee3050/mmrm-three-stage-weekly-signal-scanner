@@ -217,6 +217,8 @@ HISTORY_LEGEND = (
 )
 HISTORY_LEGEND_COLORS = {key: color_key for key, _label, color_key in HISTORY_LEGEND}
 HORIZON_CARD_MONTHS = (3, 6, 9, 12)
+TOP100_PANEL_WIDTH = 490
+MIN_WINDOW_SIZE = (960, 600)
 # Scanner notebook tab positions used by the dashboard cards.
 SCAN_EVENTS_TAB = 0
 ACTIVE_SCENARIOS_TAB = 1
@@ -354,7 +356,7 @@ class BuyPointApp(tk.Tk):
         super().__init__()
         self.ui_font_family = configure_ui_fonts(self)
         self.title("MMRM 3단계 시나리오 추적 스캐너")
-        self.minsize(1800, 680)
+        self.minsize(*MIN_WINDOW_SIZE)
 
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         self.theme_mode = load_theme(UI_SETTINGS_PATH)
@@ -635,6 +637,16 @@ class BuyPointApp(tk.Tk):
             )
 
         self._configure_card_styles(palette)
+        self.style.configure("TPanedwindow", background=palette["window"])
+        self.style.configure(
+            "Sash",
+            sashthickness=8,
+            gripcount=0,
+            background=palette["border"],
+            bordercolor=palette["window"],
+            lightcolor=palette["border"],
+            darkcolor=palette["border"],
+        )
 
         self.option_add("*TCombobox*Listbox.background", palette["field"])
         self.option_add("*TCombobox*Listbox.foreground", palette["text"])
@@ -711,7 +723,7 @@ class BuyPointApp(tk.Tk):
         save_theme(UI_SETTINGS_PATH, self.theme_mode)
 
     def _build_layout(self) -> None:
-        left_panel_width = 490
+        left_panel_width = TOP100_PANEL_WIDTH
         history_panel_width = _table_required_width(
             SIGNAL_HISTORY_DISPLAY_COLUMNS,
             SIGNAL_HISTORY_COLUMN_BOUNDS,
@@ -729,27 +741,29 @@ class BuyPointApp(tk.Tk):
             _table_required_width(columns, column_bounds)
             for columns, column_bounds in scanner_table_specs
         )
-        initial_width = (
-            left_panel_width
-            + history_panel_width
-            + scanner_panel_width
-            + 48
-        )
-        self.geometry(f"{initial_width}x820")
+        full_width = left_panel_width + history_panel_width + scanner_panel_width + 48
+        screen_width, screen_height = self._screen_size()
+        width, height = fit_window_to_screen(full_width, 820, screen_width, screen_height)
+        x = max(0, (screen_width - width) // 2)
+        y = max(0, (screen_height - height) // 3)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self._history_panel_width = history_panel_width
+        self._scanner_panel_width = scanner_panel_width
+        # A wide enough screen shows all three areas; otherwise Top 100 starts folded.
+        self.top100_visible = width >= full_width
 
         main_frame = ttk.Frame(self, padding=14)
         main_frame.pack(fill="both", expand=True)
-        main_frame.columnconfigure(0, minsize=left_panel_width)
-        main_frame.columnconfigure(1, weight=2, minsize=history_panel_width)
-        main_frame.columnconfigure(2, weight=3, minsize=scanner_panel_width)
-        main_frame.rowconfigure(0, weight=1)
+        # Draggable dividers between the areas; the panes no longer force a width.
+        self.main_panes = ttk.Panedwindow(main_frame, orient="horizontal")
+        self.main_panes.pack(fill="both", expand=True)
 
-        left_panel = ttk.LabelFrame(main_frame, text="미국 시총 Top 100", padding=6)
+        left_panel = ttk.LabelFrame(self.main_panes, text="미국 시총 Top 100", padding=6)
         left_panel.configure(width=left_panel_width)
         left_panel.grid_propagate(False)
-        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         left_panel.rowconfigure(2, weight=1)
         left_panel.columnconfigure(0, weight=1)
+        self.left_panel = left_panel
 
         self.top100_button = ttk.Button(
             left_panel,
@@ -773,24 +787,30 @@ class BuyPointApp(tk.Tk):
             lambda event: self._on_ticker_double_click(event, self.top100_tree, "ticker"),
         )
 
-        self.center_panel = ttk.Frame(main_frame)
+        self.center_panel = ttk.Frame(self.main_panes, padding=(10, 0, 10, 0))
         self.center_panel.configure(width=history_panel_width)
         self.center_panel.grid_propagate(False)
-        self.center_panel.grid(row=0, column=1, sticky="nsew", padx=(0, 10))
         center_panel = self.center_panel
         center_panel.rowconfigure(4, weight=1)
         center_panel.columnconfigure(0, weight=1)
 
         search_frame = ttk.Frame(center_panel)
         search_frame.grid(row=0, column=0, sticky="ew")
-        search_frame.columnconfigure(0, weight=1)
+        search_frame.columnconfigure(1, weight=1)
+
+        self.top100_toggle_button = ttk.Button(
+            search_frame,
+            text=self._top100_toggle_text(),
+            command=self.toggle_top100_panel,
+        )
+        self.top100_toggle_button.grid(row=0, column=0, padx=(0, 8), ipady=4)
 
         self.search_entry = ttk.Entry(
             search_frame,
             textvariable=self.ticker_var,
             font=(self.ui_font_family, 16),
         )
-        self.search_entry.grid(row=0, column=0, sticky="ew", ipady=6)
+        self.search_entry.grid(row=0, column=1, sticky="ew", ipady=6)
         self.search_entry.bind("<Return>", lambda _event: self.run_search())
         self.search_entry.focus_set()
 
@@ -799,35 +819,29 @@ class BuyPointApp(tk.Tk):
             text="검색",
             command=self.run_search,
         )
-        self.search_button.grid(row=0, column=1, padx=(8, 0), ipady=4)
+        self.search_button.grid(row=0, column=2, padx=(8, 0), ipady=4)
 
         self.theme_button = ttk.Button(
             search_frame,
             text=self._theme_button_text(),
             command=self.toggle_theme,
         )
-        self.theme_button.grid(row=0, column=2, padx=(8, 0), ipady=4)
+        self.theme_button.grid(row=0, column=3, padx=(8, 0), ipady=4)
 
         status_label = ttk.Label(
             center_panel,
             textvariable=self.status_var,
-            wraplength=history_panel_width - 30,
             padding=(0, 8, 0, 8),
         )
         status_label.grid(row=1, column=0, sticky="ew")
+        self._wrap_to_width(status_label, center_panel, margin=30)
 
         summary_frame = ttk.LabelFrame(center_panel, text="선택 종목 시나리오 성과", padding=5)
         summary_frame.grid(row=2, column=0, sticky="ew", pady=(0, 5))
-        ttk.Label(
-            summary_frame,
-            textvariable=self.ticker_profile_var,
-            wraplength=history_panel_width - 40,
-        ).pack(anchor="w")
-        ttk.Label(
-            summary_frame,
-            textvariable=self.ticker_cycle_summary_var,
-            wraplength=history_panel_width - 40,
-        ).pack(anchor="w")
+        for variable in (self.ticker_profile_var, self.ticker_cycle_summary_var):
+            summary_label = ttk.Label(summary_frame, textvariable=variable)
+            summary_label.pack(anchor="w")
+            self._wrap_to_width(summary_label, center_panel, margin=50)
         self._build_horizon_cards(summary_frame)
 
         legend_frame = ttk.Frame(center_panel, padding=(0, 2, 0, 4))
@@ -861,13 +875,17 @@ class BuyPointApp(tk.Tk):
         self.buy_tree.bind("<Double-1>", self._on_history_double_click)
 
         self.scanner_panel = ttk.LabelFrame(
-            main_frame,
+            self.main_panes,
             text="MMRM 시나리오 추적 스캐너",
             padding=6,
         )
         self.scanner_panel.configure(width=scanner_panel_width)
         self.scanner_panel.grid_propagate(False)
-        self.scanner_panel.grid(row=0, column=2, sticky="nsew")
+        if self.top100_visible:
+            self.main_panes.add(self.left_panel, weight=0)
+        self.main_panes.add(self.center_panel, weight=2)
+        self.main_panes.add(self.scanner_panel, weight=3)
+        self.after_idle(self._apply_default_pane_widths)
         scanner_panel = self.scanner_panel
         scanner_panel.rowconfigure(3, weight=1)
         scanner_panel.columnconfigure(0, weight=1)
@@ -897,11 +915,11 @@ class BuyPointApp(tk.Tk):
         self.scan_status_label = ttk.Label(
             scanner_panel,
             textvariable=self.scan_status_var,
-            wraplength=scanner_panel_width - 40,
             padding=(0, 6, 0, 6),
             style="ScanStatus.TLabel",
         )
         self.scan_status_label.grid(row=2, column=0, sticky="ew")
+        self._wrap_to_width(self.scan_status_label, scanner_panel, margin=40)
 
         self.scan_notebook = ttk.Notebook(scanner_panel)
         self.scan_notebook.grid(row=3, column=0, sticky="nsew")
@@ -1373,6 +1391,76 @@ class BuyPointApp(tk.Tk):
             "확정된 매수 성공 사례 기준"
         )
 
+    def _screen_size(self) -> tuple[int, int]:
+        return self.winfo_screenwidth(), self.winfo_screenheight()
+
+    def _top100_toggle_text(self) -> str:
+        return "Top 100 닫기" if self.top100_visible else "Top 100 열기"
+
+    def toggle_top100_panel(self) -> None:
+        if self.top100_visible:
+            self.main_panes.forget(self.left_panel)
+        else:
+            self.main_panes.insert(0, self.left_panel, weight=0)
+        self.top100_visible = not self.top100_visible
+        self.top100_toggle_button.configure(text=self._top100_toggle_text())
+        self.after_idle(self._apply_default_pane_widths)
+
+    def _apply_default_pane_widths(self) -> None:
+        self.update_idletasks()
+        total = self.main_panes.winfo_width()
+        if total <= 1:
+            self.after(50, self._apply_default_pane_widths)
+            return
+        positions = default_sash_positions(
+            total,
+            self.top100_visible,
+            TOP100_PANEL_WIDTH,
+            self._history_panel_width,
+            self._scanner_panel_width,
+        )
+        for index, position in enumerate(positions):
+            self.main_panes.sashpos(index, position)
+
+    @staticmethod
+    def _wrap_to_width(label: ttk.Label, container: tk.Widget, margin: int) -> None:
+        """Re-wrap a label's text whenever its area is resized."""
+        container.bind(
+            "<Configure>",
+            lambda event: label.configure(wraplength=max(200, event.width - margin)),
+            add="+",
+        )
+
+    @staticmethod
+    def _make_responsive_card_row(
+        frame: ttk.Frame,
+        cards: list[ttk.Frame],
+        min_card_width: int,
+    ) -> None:
+        """Lay cards out in one row, or two rows when the area is too narrow."""
+        state = {"columns": 0}
+
+        def layout(width: int) -> None:
+            columns = card_grid_columns(width, len(cards), min_card_width)
+            if columns == state["columns"]:
+                return
+            state["columns"] = columns
+            for index in range(len(cards)):
+                frame.columnconfigure(index, weight=0, uniform="")
+            for index, card in enumerate(cards):
+                row, column = divmod(index, columns)
+                frame.columnconfigure(column, weight=1, uniform="cards")
+                card.grid(
+                    row=row,
+                    column=column,
+                    sticky="nsew",
+                    padx=(0 if column == 0 else 6, 0),
+                    pady=(0 if row == 0 else 6, 0),
+                )
+
+        layout(10_000)
+        frame.bind("<Configure>", lambda event: layout(event.width), add="+")
+
     def _build_dashboard(self, parent: ttk.Frame) -> None:
         """Summary cards above the scanner tabs; a click opens the matching tab."""
         frame = ttk.Frame(parent, padding=(0, 8, 0, 0))
@@ -1384,10 +1472,10 @@ class BuyPointApp(tk.Tk):
             ("last", "마지막 스캔", None),
         )
         self.dashboard_cards: dict[str, dict[str, object]] = {}
-        for column, (key, title, tab_index) in enumerate(cards):
-            frame.columnconfigure(column, weight=1, uniform="dashboard")
+        dashboard_frames: list[ttk.Frame] = []
+        for key, title, tab_index in cards:
             card = ttk.Frame(frame, style="Card.TFrame", padding=(12, 8))
-            card.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 6, 0))
+            dashboard_frames.append(card)
             value_var = tk.StringVar(value="-")
             note_var = tk.StringVar(value="")
             title_label = ttk.Label(card, text=title, style="CardTitle.TLabel")
@@ -1408,6 +1496,7 @@ class BuyPointApp(tk.Tk):
                 "value_label": value_label,
                 "note_label": note_label,
             }
+        self._make_responsive_card_row(frame, dashboard_frames, min_card_width=170)
 
     def _refresh_dashboard(self) -> None:
         last_scan = self.latest_scan_date
@@ -1435,10 +1524,10 @@ class BuyPointApp(tk.Tk):
         frame = ttk.Frame(parent, padding=(0, 6, 0, 0))
         frame.pack(fill="x")
         self.horizon_cards: dict[int, dict[str, object]] = {}
-        for column, months in enumerate(HORIZON_CARD_MONTHS):
-            frame.columnconfigure(column, weight=1, uniform="horizon")
+        horizon_frames: list[ttk.Frame] = []
+        for months in HORIZON_CARD_MONTHS:
             card = ttk.Frame(frame, style="Card.TFrame", padding=(10, 6))
-            card.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 6, 0))
+            horizon_frames.append(card)
             ttk.Label(card, text=f"{months}개월 후", style="CardTitle.TLabel").pack(anchor="w")
             labels = {}
             for name, style in (
@@ -1452,6 +1541,7 @@ class BuyPointApp(tk.Tk):
                 label.pack(anchor="w")
                 labels[name] = (variable, label)
             self.horizon_cards[months] = labels
+        self._make_responsive_card_row(frame, horizon_frames, min_card_width=165)
         self._set_horizon_cards(None)
 
     def _set_horizon_cards(self, performance_by_horizon: dict[int, pd.Series] | None) -> None:
@@ -3147,6 +3237,40 @@ def _format_benchmark_rates(display: pd.DataFrame) -> None:
         ),
         axis=1,
     )
+
+
+def fit_window_to_screen(
+    width: int,
+    height: int,
+    screen_width: int,
+    screen_height: int,
+) -> tuple[int, int]:
+    """Shrink the preferred window size so it fits on the screen."""
+    min_width, min_height = MIN_WINDOW_SIZE
+    fitted_width = max(min_width, min(width, screen_width - 40))
+    fitted_height = max(min_height, min(height, screen_height - 80))
+    return fitted_width, fitted_height
+
+
+def card_grid_columns(width: int, count: int, min_card_width: int) -> int:
+    """All cards in one row when they fit, otherwise two per row."""
+    if count <= 2 or width >= count * min_card_width:
+        return count
+    return 2
+
+
+def default_sash_positions(
+    total_width: int,
+    show_top100: bool,
+    top100_width: int,
+    history_width: int,
+    scanner_width: int,
+) -> list[int]:
+    """Divider positions: Top 100 at its width (at most ~22%), rest by content."""
+    left = min(top100_width, max(280, int(total_width * 0.22))) if show_top100 else 0
+    remaining = max(0, total_width - left)
+    center = int(remaining * history_width / max(1, history_width + scanner_width))
+    return [left, left + center] if show_top100 else [center]
 
 
 def dashboard_summary(

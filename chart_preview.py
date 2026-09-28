@@ -261,8 +261,10 @@ class ChartPreviewWindow(tk.Toplevel):
         self.palette = theme_palette(self.theme_mode)
         self.configure(background=self.palette["window"])
         self.title("MMRM 시나리오 차트 미리보기")
-        self.geometry("1600x920")
-        self.minsize(1000, 680)
+        width = min(1600, self.winfo_screenwidth() - 40)
+        height = min(920, self.winfo_screenheight() - 80)
+        self.geometry(f"{width}x{height}")
+        self.minsize(min(1000, width), min(680, height))
         self.protocol("WM_DELETE_WINDOW", self._close)
 
         self.status_var = tk.StringVar(value="차트 데이터를 준비해 주세요.")
@@ -510,6 +512,11 @@ class ChartPreviewWindow(tk.Toplevel):
         x, y = self._window_position_before_benchmark
         x = max(0, x)
         y = max(0, y)
+        # On a smaller screen the side-by-side charts share the screen width.
+        screen_width = self.winfo_screenwidth()
+        desired_width = min(desired_width, screen_width)
+        if x < screen_width and x + desired_width > screen_width:
+            x = max(0, screen_width - desired_width)
         self.maxsize(
             max(desired_width, self.winfo_screenwidth()),
             max(desired_height, self.winfo_screenheight()),
