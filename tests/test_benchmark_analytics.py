@@ -100,9 +100,9 @@ def test_benchmark_metrics_compare_only_paired_cycles() -> None:
     assert metrics["S&P 이긴 건수"] == 1
     assert metrics["S&P 이긴 비율"] == 50.0
     assert metrics["S&P 대비 초과"] == 0.0
-    assert metrics["기준 비교 표본"] == 3
-    assert metrics["기준 승률"] == 50.0
-    assert math.isclose(metrics["기준 대비 초과"], (8.0 - 2.0 + 2.0) / 3)
+    assert metrics["평소 매수 비교 표본"] == 3
+    assert metrics["평소 매수 승률"] == 50.0
+    assert math.isclose(metrics["평소 매수 대비 초과"], (8.0 - 2.0 + 2.0) / 3)
 
 
 def test_signal_validation_splits_by_chart_strength_grade() -> None:

@@ -853,15 +853,15 @@ def test_signal_validation_view_formats_baselines() -> None:
                 "분석 표본": 4,
                 "승리": 3,
                 "승률": 75.0,
-                "기준 승률": 56.66,
-                "기준 대비 초과": 1.234,
+                "평소 매수 승률": 56.66,
+                "평소 매수 대비 초과": 1.234,
                 "S&P 이긴 비율": 50.0,
                 "S&P 대비 초과": -0.5,
                 "평균 손익률": 4.0,
                 "중앙값": 3.0,
                 "S&P 비교 표본": 4,
                 "S&P 이긴 건수": 2,
-                "기준 비교 표본": 4,
+                "평소 매수 비교 표본": 4,
             }
         ]
     )
@@ -869,9 +869,9 @@ def test_signal_validation_view_formats_baselines() -> None:
     display = signal_validation_for_display(validation)
 
     assert display.loc[0, "승률"] == "75.0% (3/4)"
-    assert display.loc[0, "기준 승률"] == "56.7%"
+    assert display.loc[0, "평소 매수 승률"] == "56.7%"
     assert display.loc[0, "S&P 이긴 비율"] == "50.0% (2/4)"
-    assert _format_value(display.loc[0, "기준 대비 초과"], "기준 대비 초과") == "+1.23%p"
+    assert _format_value(display.loc[0, "평소 매수 대비 초과"], "평소 매수 대비 초과") == "+1.23%p"
     assert _format_value(display.loc[0, "S&P 대비 초과"], "S&P 대비 초과") == "-0.50%p"
 
 
@@ -932,14 +932,14 @@ def test_horizon_card_lines_color_the_comparisons() -> None:
     from app import horizon_card_lines
 
     row = pd.Series(
-        {"분석 표본": 4, "승리": 3, "승률": 75.0, "기준 대비 초과": 2.5, "S&P 대비 초과": -1.0}
+        {"분석 표본": 4, "승리": 3, "승률": 75.0, "평소 매수 대비 초과": 2.5, "S&P 대비 초과": -1.0}
     )
 
     lines = horizon_card_lines(row)
 
     assert lines["win"] == ("승률 75.0%", "")
     assert lines["sample"] == ("4건 중 3건 수익", "")
-    assert lines["nearby"] == ("기준 대비 +2.50%p", "good")
+    assert lines["nearby"] == ("평소 매수 대비 +2.50%p", "good")
     assert lines["sp500"] == ("S&P 대비 -1.00%p", "bad")
     assert horizon_card_lines(pd.Series({"분석 표본": 0}))["win"] == ("미산출", "")
     assert horizon_card_lines(None)["win"] == ("-", "")

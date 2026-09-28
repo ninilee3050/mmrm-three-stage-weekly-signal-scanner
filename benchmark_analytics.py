@@ -123,9 +123,9 @@ def benchmark_metrics(
         "S&P 이긴 건수": sp500_wins,
         "S&P 이긴 비율": sp500_wins / sp500_count * 100 if sp500_count else np.nan,
         "S&P 대비 초과": float(sp500_excess.mean()) if sp500_count else np.nan,
-        "기준 비교 표본": nearby_count,
-        "기준 승률": float(nearby_pairs["win_rate"].mean()) if nearby_count else np.nan,
-        "기준 대비 초과": float(nearby_excess.mean()) if nearby_count else np.nan,
+        "평소 매수 비교 표본": nearby_count,
+        "평소 매수 승률": float(nearby_pairs["win_rate"].mean()) if nearby_count else np.nan,
+        "평소 매수 대비 초과": float(nearby_excess.mean()) if nearby_count else np.nan,
     }
 
 
@@ -135,9 +135,9 @@ def empty_benchmark_metrics() -> dict[str, object]:
         "S&P 이긴 건수": 0,
         "S&P 이긴 비율": np.nan,
         "S&P 대비 초과": np.nan,
-        "기준 비교 표본": 0,
-        "기준 승률": np.nan,
-        "기준 대비 초과": np.nan,
+        "평소 매수 비교 표본": 0,
+        "평소 매수 승률": np.nan,
+        "평소 매수 대비 초과": np.nan,
     }
 
 
