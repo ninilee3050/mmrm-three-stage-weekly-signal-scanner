@@ -873,3 +873,123 @@ def test_signal_validation_view_formats_baselines() -> None:
     assert display.loc[0, "S&P 이긴 비율"] == "50.0% (2/4)"
     assert _format_value(display.loc[0, "기준 대비 초과"], "기준 대비 초과") == "+1.23%p"
     assert _format_value(display.loc[0, "S&P 대비 초과"], "S&P 대비 초과") == "-0.50%p"
+
+
+def test_dashboard_before_any_scan_uses_saved_state() -> None:
+    from app import dashboard_summary
+
+    active = pd.DataFrame({"현재상태": ["3차 신호 대기", "3차 신호 대기", "2차 신호 대기"]})
+
+    summary = dashboard_summary(
+        pd.DataFrame(),
+        active,
+        scanned_this_session=False,
+        last_scan_date=pd.Timestamp("2026-09-18"),
+        today=pd.Timestamp("2026-09-28"),
+    )
+
+    assert summary["buy"] == ("스캔 전", "통합 스캔 후 표시됩니다", False)
+    assert summary["wait3"][0] == "2건"
+    assert summary["wait2"][0] == "1건"
+    assert summary["last"] == ("09/18", "10일 전 · 스캔 필요", True)
+
+
+def test_dashboard_counts_this_scans_buys_and_priority() -> None:
+    from app import dashboard_summary
+
+    events = pd.DataFrame(
+        {
+            "단계": ["3차 신호", "3차 신호", "3차 신호", "1차 신호"],
+            "결과": ["매수 성공", "매수 성공", "실패", "2차 신호 대기"],
+            "검토등급": ["우선검토", "일반검토", "", ""],
+        }
+    )
+
+    summary = dashboard_summary(
+        events,
+        pd.DataFrame(),
+        scanned_this_session=True,
+        last_scan_date=pd.Timestamp("2026-09-28"),
+        today=pd.Timestamp("2026-09-28"),
+    )
+
+    assert summary["buy"] == ("2건", "우선검토 1건", True)
+    assert summary["wait3"][0] == "0건"
+    assert summary["last"] == ("09/28", "오늘", False)
+
+
+def test_dashboard_without_scan_history_asks_for_a_scan() -> None:
+    from app import dashboard_summary
+
+    summary = dashboard_summary(
+        pd.DataFrame(), pd.DataFrame(), False, None, pd.Timestamp("2026-09-28")
+    )
+
+    assert summary["last"] == ("기록 없음", "통합 스캔을 실행해 주세요", True)
+
+
+def test_horizon_card_lines_color_the_comparisons() -> None:
+    from app import horizon_card_lines
+
+    row = pd.Series(
+        {"분석 표본": 4, "승리": 3, "승률": 75.0, "기준 대비 초과": 2.5, "S&P 대비 초과": -1.0}
+    )
+
+    lines = horizon_card_lines(row)
+
+    assert lines["win"] == ("승률 75.0%", "")
+    assert lines["sample"] == ("4건 중 3건 수익", "")
+    assert lines["nearby"] == ("기준 대비 +2.50%p", "good")
+    assert lines["sp500"] == ("S&P 대비 -1.00%p", "bad")
+    assert horizon_card_lines(pd.Series({"분석 표본": 0}))["win"] == ("미산출", "")
+    assert horizon_card_lines(None)["win"] == ("-", "")
+
+
+def test_history_rows_are_newest_first_and_map_back_to_cycles() -> None:
+    from app import BuyPointApp
+
+    rows = ["row_newest", "row_middle", "row_oldest"]
+    selected = []
+    window = SimpleNamespace(
+        buy_tree=SimpleNamespace(
+            get_children=lambda: rows,
+            index=rows.index,
+            selection_set=selected.append,
+            focus=lambda item: None,
+            see=lambda item: None,
+        ),
+        _syncing_chart_history_selection=False,
+    )
+    window._history_cycle_position = lambda item: BuyPointApp._history_cycle_position(window, item)
+
+    assert BuyPointApp._history_cycle_position(window, "row_newest") == 2
+    assert BuyPointApp._history_cycle_position(window, "row_oldest") == 0
+    BuyPointApp._select_history_position(window, 0)
+    assert selected == ["row_oldest"]
+
+
+def test_window_fits_small_screens_and_keeps_full_size_on_wide_ones() -> None:
+    from app import fit_window_to_screen
+
+    assert fit_window_to_screen(3501, 820, 5120, 1440) == (3501, 820)
+    assert fit_window_to_screen(3501, 820, 1920, 1080) == (1880, 820)
+    assert fit_window_to_screen(3501, 820, 1366, 768) == (1326, 688)
+    assert fit_window_to_screen(3501, 820, 800, 600) == (960, 600)
+
+
+def test_default_dividers_split_by_content_width() -> None:
+    from app import default_sash_positions
+
+    assert default_sash_positions(1800, False, 490, 1000, 1500) == [720]
+    top100_open = default_sash_positions(1300, True, 490, 1000, 1500)
+    assert top100_open[0] == 286  # Top 100 takes at most ~22% on small screens
+    assert top100_open[1] == 286 + int((1300 - 286) * 0.4)
+    assert default_sash_positions(3450, True, 490, 1000, 1500)[0] == 490
+
+
+def test_cards_wrap_to_two_rows_only_when_narrow() -> None:
+    from app import card_grid_columns
+
+    assert card_grid_columns(900, 4, 170) == 4
+    assert card_grid_columns(600, 4, 170) == 2
+    assert card_grid_columns(100, 2, 170) == 2
