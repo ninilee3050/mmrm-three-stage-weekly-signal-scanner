@@ -302,3 +302,28 @@ def test_chart_without_cycle_defaults_to_latest_three_years() -> None:
 
     assert start == pd.Timestamp("2023-01-02")
     assert end == index[-1]
+
+
+def test_benchmark_result_after_window_close_is_ignored() -> None:
+    from types import SimpleNamespace
+
+    closed_window = SimpleNamespace(_window_alive=lambda: False)
+
+    # Would raise AttributeError if it touched any widget of the closed window.
+    ChartPreviewWindow._finish_benchmark_load(closed_window, pd.DataFrame())
+    ChartPreviewWindow._finish_benchmark_error(closed_window, "network error")
+    ChartPreviewWindow._redraw(SimpleNamespace(_redraw_job="job", _window_alive=lambda: False))
+
+
+def test_empty_benchmark_result_is_reported_as_error() -> None:
+    from types import SimpleNamespace
+
+    errors = []
+    window = SimpleNamespace(
+        _window_alive=lambda: True,
+        _finish_benchmark_error=errors.append,
+    )
+
+    ChartPreviewWindow._finish_benchmark_load(window, pd.DataFrame())
+
+    assert errors == ["S&P 500 데이터가 비어 있습니다."]

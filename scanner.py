@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from data_provider import weekly_bar_in_progress
+
 
 SECOND_SIGNAL_MAX_MA20_OVER_MA50_SPREAD = 0.05
 
@@ -105,8 +107,17 @@ def scan_buy_points(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return buy_points, full
 
 
-def scan_signal_cycles(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def scan_signal_cycles(
+    data: pd.DataFrame,
+    now: pd.Timestamp | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     full = add_signal_columns(data)
+    # A forward return that lands on the unfinished current week is not final.
+    in_progress_position = (
+        len(full) - 1
+        if len(full) and weekly_bar_in_progress(full.index[-1], now=now)
+        else None
+    )
     full["original_mmrm_point"] = False
     full["first_signal"] = False
     full["second_signal"] = False
@@ -140,6 +151,7 @@ def scan_signal_cycles(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
                     cycle_rows.append(
                         _make_signal_cycle_row(
                             full,
+                            in_progress_position=in_progress_position,
                             first_date=first_date,
                             second_date=second_date,
                             third_decision_date=None,
@@ -156,6 +168,7 @@ def scan_signal_cycles(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
                     cycle_rows.append(
                         _make_signal_cycle_row(
                             full,
+                            in_progress_position=in_progress_position,
                             first_date=first_date,
                             second_date=second_date,
                             third_decision_date=None,
@@ -182,6 +195,7 @@ def scan_signal_cycles(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
             cycle_rows.append(
                 _make_signal_cycle_row(
                     full,
+                    in_progress_position=in_progress_position,
                     first_date=first_date,
                     second_date=second_date,
                     third_decision_date=date,
@@ -197,6 +211,7 @@ def scan_signal_cycles(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         cycle_rows.append(
             _make_signal_cycle_row(
                 full,
+                in_progress_position=in_progress_position,
                 first_date=first_date,
                 second_date=second_date,
                 third_decision_date=None,
@@ -254,27 +269,32 @@ def _make_signal_cycle_row(
     second_date: pd.Timestamp | None,
     third_decision_date: pd.Timestamp | None,
     outcome: str,
+    in_progress_position: int | None = None,
 ) -> dict[str, object]:
     successful = outcome == "매수 성공"
     return_3m, return_3m_status = _forward_return_result(
         full,
         third_decision_date,
         13,
+        in_progress_position,
     ) if successful else (float("nan"), "해당 없음")
     return_6m, return_6m_status = _forward_return_result(
         full,
         third_decision_date,
         26,
+        in_progress_position,
     ) if successful else (float("nan"), "해당 없음")
     return_9m, return_9m_status = _forward_return_result(
         full,
         third_decision_date,
         39,
+        in_progress_position,
     ) if successful else (float("nan"), "해당 없음")
     return_12m, return_12m_status = _forward_return_result(
         full,
         third_decision_date,
         52,
+        in_progress_position,
     ) if successful else (float("nan"), "해당 없음")
 
     return {
@@ -297,6 +317,7 @@ def _forward_return_result(
     full: pd.DataFrame,
     signal_date: pd.Timestamp | None,
     weeks: int,
+    in_progress_position: int | None = None,
 ) -> tuple[float, str]:
     if signal_date is None:
         return float("nan"), "해당 없음"
@@ -305,7 +326,7 @@ def _forward_return_result(
     future_position = position + weeks
     if position < 0:
         return float("nan"), "데이터 없음"
-    if future_position >= len(full):
+    if future_position >= len(full) or future_position == in_progress_position:
         return float("nan"), "진행 중"
 
     signal_close = full.iloc[position]["Close"]

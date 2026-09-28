@@ -823,3 +823,20 @@ def test_same_ticker_clicked_during_search_is_not_rerun() -> None:
 
     assert BuyPointApp._take_queued_search(_search_state("AAPL", True), "aapl") is False
     assert BuyPointApp._take_queued_search(_search_state("MSFT", False), "AAPL") is False
+
+
+def test_closed_scenarios_load_after_excel_resave(tmp_path) -> None:
+    path = tmp_path / "closed_excel.csv"
+    pd.DataFrame(
+        [{"현재 시총순위": 3, "티커": "AAA", "1차신호일": "2025-01-06", "결과": "매수 성공"}]
+    ).to_csv(path, index=False, encoding="cp949")
+
+    loaded = load_closed_scenarios(path)
+
+    assert loaded.loc[0, "결과"] == "매수 성공"
+
+
+def test_median_max_min_returns_are_shown_as_percentages() -> None:
+    assert _format_value(12.3456, "중앙값") == "+12.35%"
+    assert _format_value(40.0, "최고") == "+40.00%"
+    assert _format_value(-8.5, "최저") == "-8.50%"

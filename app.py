@@ -18,6 +18,7 @@ from chart_strength import (
     load_chart_strength_reference,
 )
 from chart_preview import ChartPreviewWindow
+from csv_io import describe_save_error, read_csv_flexible
 from data_provider import DataLoadError, load_weekly_data, normalize_ticker
 from indicators import calculate_indicators
 from market_cap_provider import MarketCapCompany, MarketCapLoadError, fetch_us_top_market_cap
@@ -349,11 +350,25 @@ class BuyPointApp(tk.Tk):
         self.closed_filter_status_var = tk.StringVar(value="")
         self.top100_companies: list[MarketCapCompany] = []
         self.latest_scan_events = pd.DataFrame(columns=SCAN_EVENT_COLUMNS)
+        startup_warnings: list[str] = []
+        try:
+            saved_active = load_active_scenarios()
+        except Exception as exc:
+            saved_active = pd.DataFrame(columns=ACTIVE_SCENARIO_COLUMNS)
+            startup_warnings.append(f"활성 시나리오 파일을 읽지 못했습니다: {exc}")
         self.latest_active_scenarios = annotate_pending_scenarios(
-            prioritize_active_scenarios(load_active_scenarios())
+            prioritize_active_scenarios(saved_active)
         )
         self.latest_closed_results = pd.DataFrame(columns=CLOSED_RESULT_COLUMNS)
-        self.latest_closed_scenarios = load_closed_scenarios()
+        try:
+            self.latest_closed_scenarios = load_closed_scenarios()
+        except Exception as exc:
+            self.latest_closed_scenarios = pd.DataFrame(
+                columns=CLOSED_SCENARIO_DISPLAY_COLUMNS
+            )
+            startup_warnings.append(f"종료 시나리오 파일을 읽지 못했습니다: {exc}")
+        # Scan results that could not be written, kept for "스캔 저장하기".
+        self.unsaved_scan_state: tuple[pd.DataFrame, ...] | None = None
         self.latest_scan_failures = pd.DataFrame(columns=SCAN_FAILURE_COLUMNS)
         self.latest_scan_date: pd.Timestamp | None = None
         self.latest_classifications = pd.DataFrame()
@@ -393,6 +408,16 @@ class BuyPointApp(tk.Tk):
         populate_table(self.active_tree, active_display)
         self._apply_active_scenario_tags(active_display)
         self._refresh_closed_scenario_view()
+        if startup_warnings:
+            self.after(200, self._show_startup_warnings, startup_warnings)
+
+    def _show_startup_warnings(self, warnings: list[str]) -> None:
+        messagebox.showwarning(
+            "저장 파일 읽기 실패",
+            "\n\n".join(warnings)
+            + "\n\n빈 상태로 시작합니다. 다음 통합 스캔이 끝나면 이 파일은 새 결과로 "
+            "바뀌므로, 필요하면 스캔 전에 outputs 폴더의 파일을 따로 복사해 두세요.",
+        )
 
     def _apply_theme(self) -> None:
         palette = theme_palette(self.theme_mode)
@@ -1489,12 +1514,24 @@ class BuyPointApp(tk.Tk):
                 classifications,
                 sector_output,
             )
-            save_analytics_outputs(sector_output, industry_output, ranking_output)
-            save_active_scenarios(active_df)
-            save_closed_scenarios(closed_scenarios_df)
         except Exception as exc:
             self.after(0, self._show_scan_error, exc)
             return
+
+        # Saving is separate so a file left open in Excel cannot discard the scan.
+        unsaved_state = (
+            sector_output,
+            industry_output,
+            ranking_output,
+            active_df,
+            closed_scenarios_df,
+        )
+        save_warning = ""
+        try:
+            save_scan_state(*unsaved_state)
+            unsaved_state = None
+        except OSError as exc:
+            save_warning = describe_save_error(exc)
 
         self.after(
             0,
@@ -1514,6 +1551,8 @@ class BuyPointApp(tk.Tk):
             ranking_output,
             sp500_data,
             sp500_warning,
+            unsaved_state,
+            save_warning,
         )
 
     def _show_top100_loaded_by_scan(self, companies: list[MarketCapCompany]) -> None:
@@ -1604,7 +1643,10 @@ class BuyPointApp(tk.Tk):
         ranking_output: pd.DataFrame,
         sp500_data: pd.DataFrame,
         sp500_warning: str,
+        unsaved_state: tuple[pd.DataFrame, ...] | None = None,
+        save_warning: str = "",
     ) -> None:
+        self.unsaved_scan_state = unsaved_state
         self.latest_scan_events = events.copy()
         self.chart_strength_details = dict(chart_strength_details)
         self.latest_active_scenarios = active_scenarios.copy()
@@ -1689,6 +1731,16 @@ class BuyPointApp(tk.Tk):
         self.scan_button.configure(state="normal")
         self.scan_save_button.configure(state="normal")
         self.top100_button.configure(state="normal")
+        if save_warning:
+            self.scan_status_var.set(
+                f"스캔 완료, 저장 실패: {save_warning}  |  {self.scan_status_var.get()}"
+            )
+            messagebox.showwarning(
+                "스캔 결과 저장 실패",
+                "스캔은 완료되어 화면에 표시했지만 결과 파일을 저장하지 못했습니다.\n\n"
+                + save_warning
+                + "\n\n파일을 닫은 뒤 '스캔 저장하기'를 누르면 다시 저장합니다.",
+            )
 
     def _show_scan_error(self, exc: Exception) -> None:
         if isinstance(exc, MarketCapLoadError):
@@ -1708,27 +1760,37 @@ class BuyPointApp(tk.Tk):
             messagebox.showinfo("저장할 스캔 없음", "먼저 3단계 통합 스캔을 실행해 주세요.")
             return
 
-        saved_paths = save_tracker_scan_outputs(
-            self.latest_scan_events,
-            self.latest_active_scenarios,
-            self.latest_closed_results,
-            self.latest_scan_failures,
-            self.latest_scan_date,
-        )
-        saved_paths += save_analytics_outputs(
-            self.latest_sector_performance,
-            self.latest_industry_performance,
-            self.latest_field_rankings,
-            output_dir=DOWNLOADS_DIR,
-            date_suffix=self.latest_scan_date.strftime("%Y-%m-%d"),
-        )
-        saved_paths += (
-            save_closed_scenarios(
-                self.latest_closed_scenarios,
-                DOWNLOADS_DIR
-                / f"MMRM_closed_scenarios_{self.latest_scan_date:%Y-%m-%d}.csv",
-            ),
-        )
+        try:
+            if self.unsaved_scan_state is not None:
+                # Retry the state files that failed to save after the scan.
+                save_scan_state(*self.unsaved_scan_state)
+                self.unsaved_scan_state = None
+            saved_paths = save_tracker_scan_outputs(
+                self.latest_scan_events,
+                self.latest_active_scenarios,
+                self.latest_closed_results,
+                self.latest_scan_failures,
+                self.latest_scan_date,
+            )
+            saved_paths += save_analytics_outputs(
+                self.latest_sector_performance,
+                self.latest_industry_performance,
+                self.latest_field_rankings,
+                output_dir=DOWNLOADS_DIR,
+                date_suffix=self.latest_scan_date.strftime("%Y-%m-%d"),
+            )
+            saved_paths += (
+                save_closed_scenarios(
+                    self.latest_closed_scenarios,
+                    DOWNLOADS_DIR
+                    / f"MMRM_closed_scenarios_{self.latest_scan_date:%Y-%m-%d}.csv",
+                ),
+            )
+        except OSError as exc:
+            message = describe_save_error(exc)
+            self.scan_status_var.set(f"저장 실패: {message}")
+            messagebox.showerror("스캔 결과 저장 실패", message)
+            return
         self.scan_status_var.set(
             "스캔 결과 저장 완료: " + " / ".join(str(path) for path in saved_paths)
         )
@@ -2082,7 +2144,12 @@ class BuyPointApp(tk.Tk):
             )
             calculated = calculate_indicators(raw_data)
             signal_cycles, full_table = scan_signal_cycles(calculated)
-            signal_path, full_path = save_signal_outputs(ticker, signal_cycles, full_table)
+            try:
+                signal_path, _ = save_signal_outputs(ticker, signal_cycles, full_table)
+                save_message = f"저장: {signal_path}"
+            except OSError as exc:
+                # Show the result anyway when a CSV is open in Excel.
+                save_message = f"저장 실패: {describe_save_error(exc)}"
             reference_error = None
             try:
                 chart_strength_reference = load_chart_strength_reference()
@@ -2126,7 +2193,7 @@ class BuyPointApp(tk.Tk):
             ticker,
             signal_cycles,
             full_table,
-            signal_path,
+            save_message,
             company,
             classifications,
             performance_by_horizon,
@@ -2141,7 +2208,7 @@ class BuyPointApp(tk.Tk):
         ticker: str,
         signal_cycles: pd.DataFrame,
         full_table: pd.DataFrame,
-        signal_path: Path,
+        save_message: str,
         company: MarketCapCompany,
         classifications: pd.DataFrame,
         performance_by_horizon: dict[int, pd.Series],
@@ -2167,7 +2234,7 @@ class BuyPointApp(tk.Tk):
         count = len(signal_cycles)
         self.status_var.set(
             f"{ticker}: 3단계 신호 사이클 {count}개를 찾았습니다. "
-            f"저장: {signal_path}"
+            f"{save_message}"
         )
         classification = (
             classifications.iloc[0]
@@ -2296,7 +2363,7 @@ def load_closed_scenarios(
     if not path.exists():
         return pd.DataFrame(columns=CLOSED_SCENARIO_DISPLAY_COLUMNS)
 
-    data = pd.read_csv(path)
+    data = read_csv_flexible(path)
     if "현재 시총순위" not in data.columns and "순위" in data.columns:
         data = data.rename(columns={"순위": "현재 시총순위"})
     data = data.reindex(columns=CLOSED_SCENARIO_DISPLAY_COLUMNS)
@@ -2379,6 +2446,19 @@ def save_analytics_outputs(
     industry_performance.to_csv(industry_path, index=False, encoding="utf-8-sig")
     field_rankings.to_csv(ranking_path, index=False, encoding="utf-8-sig")
     return sector_path, industry_path, ranking_path
+
+
+def save_scan_state(
+    sector_performance: pd.DataFrame,
+    industry_performance: pd.DataFrame,
+    field_rankings: pd.DataFrame,
+    active_scenarios: pd.DataFrame,
+    closed_scenarios: pd.DataFrame,
+) -> None:
+    """Write the files the next app start and scan read back from outputs/."""
+    save_analytics_outputs(sector_performance, industry_performance, field_rankings)
+    save_active_scenarios(active_scenarios)
+    save_closed_scenarios(closed_scenarios)
 
 
 def _failure_row(company: MarketCapCompany, error: str) -> dict[str, object]:
@@ -3082,7 +3162,7 @@ def _format_value(value: object, column: str = "") -> str:
         column.endswith("수익률")
         or column.endswith("손익률")
         or column.endswith("이격률")
-        or column in {"승률", "매수 도달률"}
+        or column in {"승률", "매수 도달률", "중앙값", "최고", "최저"}
     ) and isinstance(
         value, (int, float)
     ):

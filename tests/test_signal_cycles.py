@@ -361,3 +361,33 @@ def test_successful_cycle_marks_missing_future_price_as_data_unavailable() -> No
     cycle = cycles.iloc[0]
     assert pd.isna(cycle["Return3M"])
     assert cycle["Return3MStatus"] == "데이터 없음"
+
+
+def _cycle_with_return_on_last_bar() -> pd.DataFrame:
+    # Third signal on row 5; the 3-month (13-week) return lands on the last row.
+    rows = successful_cycle_setup() + [{"Close": 110.0} for _ in range(13)]
+    return make_frame(rows)
+
+
+def test_return_on_unfinished_current_week_is_in_progress() -> None:
+    data = _cycle_with_return_on_last_bar()
+    last_week = data.index[-1]
+
+    cycles, _ = scan_signal_cycles(
+        data, now=last_week + pd.Timedelta(days=2, hours=11)
+    )
+
+    assert cycles.loc[0, "Return3MStatus"] == "진행 중"
+    assert math.isnan(cycles.loc[0, "Return3M"])
+
+
+def test_return_on_week_closed_friday_afternoon_is_confirmed() -> None:
+    data = _cycle_with_return_on_last_bar()
+    last_week = data.index[-1]
+
+    cycles, _ = scan_signal_cycles(
+        data, now=last_week + pd.Timedelta(days=4, hours=16)
+    )
+
+    assert cycles.loc[0, "Return3MStatus"] == "확정"
+    assert math.isclose(cycles.loc[0, "Return3M"], (110.0 / 103.0 - 1) * 100)
