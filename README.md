@@ -371,20 +371,35 @@ outputs/scan_failures_YYYY-MM-DD.csv
 ## 파일 역할
 
 ```text
-app.py                 Tkinter GUI와 통합 스캔 실행
-scanner.py             MMRM 3단계 사이클과 수익률 계산
-scenario_tracker.py    활성 상태 저장·복원과 스캔 결과 요약
-performance_analytics.py 종목·분야별 성과와 순위 계산
-benchmark_analytics.py   S&P 500·같은 종목 앞뒤 1년(평소 매수) 대비 성과 계산
-csv_io.py                엑셀 호환 CSV 읽기와 저장 오류 안내
-sector_provider.py      Yahoo 섹터·산업 조회와 로컬 캐시
-data_provider.py       Yahoo 다운로드와 일봉→주봉 변환
-indicators.py          이동평균, Momentum, MACD, RSI, MFI 계산
-market_cap_provider.py 미국 시가총액 Top 100 실시간 조회
-weekly_scan.py         GUI 없는 3단계 통합 스캔
-tests/                 계산과 상태 추적 테스트
-data/                  종목별 가격 데이터 캐시
-outputs/               상태와 결과 CSV
+app.py                    프로그램 시작점과 메인 창(아래 gui/ 부품을 조립)
+gui/config.py             저장 경로, 표 컬럼, 화면 배치 상수
+gui/layout.py             창 배치: 분할 영역, Top 100 접기, 탭과 표 생성
+gui/theme.py              라이트·다크 테마와 행 색상
+gui/cards.py              스캐너 요약 카드와 3·6·9·12개월 카드
+gui/scan.py               Top 100 불러오기와 3단계 통합 스캔
+gui/search.py             종목 검색과 검색을 시작하는 클릭 처리
+gui/history.py            과거 기록 표와 차트 창 연동, 차트 강도 툴팁
+gui/analytics.py          종료 시나리오 필터, 분야별 성과, 신호 효과 검증 탭
+gui/tables.py             표 위젯과 컬럼 폭 계산, 창 크기 계산
+gui/formatting.py         표 표시 문구, 행 색상 태그, 카드 문구
+gui/scan_results.py       스캔 결과 조립·정렬·필터
+gui/storage.py            결과 CSV 저장과 불러오기
+chart_preview.py          주봉 차트 미리보기 창
+scanner.py                MMRM 3단계 사이클과 수익률 계산
+scenario_tracker.py       활성 상태 저장·복원과 스캔 결과 요약
+performance_analytics.py  종목·분야별 성과와 순위 계산
+benchmark_analytics.py    S&P 500·같은 종목 앞뒤 1년(평소 매수) 대비 성과 계산
+chart_strength.py         3차 신호 차트 강도 점수
+market_context.py         S&P 500 시장 상태
+csv_io.py                 엑셀 호환 CSV 읽기와 저장 오류 안내
+sector_provider.py        Yahoo 섹터·산업 조회와 로컬 캐시
+data_provider.py          Yahoo 다운로드와 일봉→주봉 변환
+indicators.py             이동평균, Momentum, MACD, RSI, MFI 계산
+market_cap_provider.py    미국 시가총액 Top 100 실시간 조회
+weekly_scan.py            GUI 없는 3단계 통합 스캔
+tests/                    계산과 상태 추적 테스트
+data/                     종목별 가격 데이터 캐시
+outputs/                  상태와 결과 CSV
 ```
 
 ## 테스트

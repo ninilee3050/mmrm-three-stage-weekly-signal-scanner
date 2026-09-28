@@ -4,42 +4,46 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from app import (
+from app import BuyPointApp
+from gui.config import (
     ACTIVE_SCENARIO_DISPLAY_COLUMNS,
+    CLOSED_RESULT_DISPLAY_COLUMNS,
     CLOSED_SCENARIO_COLUMN_BOUNDS,
     CLOSED_SCENARIO_DISPLAY_COLUMNS,
-    CLOSED_RESULT_DISPLAY_COLUMNS,
     FIELD_DISPLAY_COLUMNS,
     RANKING_DISPLAY_COLUMNS,
     SCAN_EVENT_DISPLAY_COLUMNS,
     SCAN_FAILURE_COLUMNS,
-    SIGNAL_HISTORY_DISPLAY_COLUMNS,
     SIGNAL_HISTORY_COLUMN_BOUNDS,
-    BuyPointApp,
-    _column_width,
-    _distributed_column_widths,
+    SIGNAL_HISTORY_DISPLAY_COLUMNS,
+)
+from gui.formatting import (
     _format_value,
-    _table_required_width,
     active_scenario_tag,
-    annotate_signal_history_display,
-    add_scan_performance_columns,
-    add_sector_column,
-    build_closed_scenario_history,
     field_performance_for_display,
-    filter_closed_scenarios,
     history_cycle_tag,
-    load_closed_scenarios,
-    prioritize_active_scenarios,
-    prioritize_scan_events,
     ranking_for_display,
-    save_analytics_outputs,
-    save_closed_scenarios,
     scan_event_tag,
     scanner_table_for_display,
-    signal_cycle_position,
     signal_cycles_for_display,
+)
+from gui.scan_results import (
+    add_scan_performance_columns,
+    add_sector_column,
+    annotate_signal_history_display,
+    build_closed_scenario_history,
+    filter_closed_scenarios,
+    prioritize_active_scenarios,
+    prioritize_scan_events,
+    signal_cycle_position,
     validate_chart_strength_range,
 )
+from gui.storage import (
+    load_closed_scenarios,
+    save_analytics_outputs,
+    save_closed_scenarios,
+)
+from gui.tables import _column_width, _distributed_column_widths, _table_required_width
 from market_cap_provider import MarketCapCompany
 
 
@@ -843,7 +847,7 @@ def test_median_max_min_returns_are_shown_as_percentages() -> None:
 
 
 def test_signal_validation_view_formats_baselines() -> None:
-    from app import signal_validation_for_display
+    from gui.formatting import signal_validation_for_display
 
     validation = pd.DataFrame(
         [
@@ -876,7 +880,7 @@ def test_signal_validation_view_formats_baselines() -> None:
 
 
 def test_dashboard_before_any_scan_uses_saved_state() -> None:
-    from app import dashboard_summary
+    from gui.formatting import dashboard_summary
 
     active = pd.DataFrame({"현재상태": ["3차 신호 대기", "3차 신호 대기", "2차 신호 대기"]})
 
@@ -895,7 +899,7 @@ def test_dashboard_before_any_scan_uses_saved_state() -> None:
 
 
 def test_dashboard_counts_this_scans_buys_and_priority() -> None:
-    from app import dashboard_summary
+    from gui.formatting import dashboard_summary
 
     events = pd.DataFrame(
         {
@@ -919,7 +923,7 @@ def test_dashboard_counts_this_scans_buys_and_priority() -> None:
 
 
 def test_dashboard_without_scan_history_asks_for_a_scan() -> None:
-    from app import dashboard_summary
+    from gui.formatting import dashboard_summary
 
     summary = dashboard_summary(
         pd.DataFrame(), pd.DataFrame(), False, None, pd.Timestamp("2026-09-28")
@@ -929,7 +933,7 @@ def test_dashboard_without_scan_history_asks_for_a_scan() -> None:
 
 
 def test_horizon_card_lines_color_the_comparisons() -> None:
-    from app import horizon_card_lines
+    from gui.formatting import horizon_card_lines
 
     row = pd.Series(
         {"분석 표본": 4, "승리": 3, "승률": 75.0, "평소 매수 대비 초과": 2.5, "S&P 대비 초과": -1.0}
@@ -969,7 +973,7 @@ def test_history_rows_are_newest_first_and_map_back_to_cycles() -> None:
 
 
 def test_window_fits_small_screens_and_keeps_full_size_on_wide_ones() -> None:
-    from app import fit_window_to_screen
+    from gui.tables import fit_window_to_screen
 
     assert fit_window_to_screen(3501, 820, 5120, 1440) == (3501, 820)
     assert fit_window_to_screen(3501, 820, 1920, 1080) == (1880, 820)
@@ -978,7 +982,7 @@ def test_window_fits_small_screens_and_keeps_full_size_on_wide_ones() -> None:
 
 
 def test_default_dividers_split_by_content_width() -> None:
-    from app import default_sash_positions
+    from gui.tables import default_sash_positions
 
     assert default_sash_positions(1800, False, 490, 1000, 1500) == [720]
     top100_open = default_sash_positions(1300, True, 490, 1000, 1500)
@@ -988,7 +992,7 @@ def test_default_dividers_split_by_content_width() -> None:
 
 
 def test_cards_wrap_to_two_rows_only_when_narrow() -> None:
-    from app import card_grid_columns
+    from gui.tables import card_grid_columns
 
     assert card_grid_columns(900, 4, 170) == 4
     assert card_grid_columns(600, 4, 170) == 2
