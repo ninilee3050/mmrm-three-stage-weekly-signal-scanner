@@ -72,6 +72,35 @@ def _blend_hex(foreground: str, background: str, opacity: float) -> str:
     return "#" + "".join(f"{channel:02x}" for channel in blended)
 
 
+def _relative_luminance(color: str) -> float:
+    channels = []
+    for index in (1, 3, 5):
+        value = int(color[index : index + 2], 16) / 255
+        channels.append(
+            value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+        )
+    red, green, blue = channels
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
+def contrast_ratio(first: str, second: str) -> float:
+    lighter, darker = sorted(
+        (_relative_luminance(first), _relative_luminance(second)), reverse=True
+    )
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def readable_text_color(color: str, background: str, text_color: str) -> str:
+    """Keep a label's hue but move it toward the text color until it is legible."""
+    if not color.startswith("#") or len(color) != 7:
+        return color
+    for opacity in (1.0, 0.8, 0.65, 0.5, 0.35, 0.2):
+        candidate = _blend_hex(color, text_color, opacity)
+        if contrast_ratio(candidate, background) >= MIN_TEXT_CONTRAST:
+            return candidate
+    return text_color
+
+
 OSCILLATOR_UPPER = 70.0
 OSCILLATOR_CENTER = 50.0
 OSCILLATOR_LOWER = 30.0
@@ -84,6 +113,10 @@ MACD_SIGNAL_COLOR = MA_STYLES["MA_50"][0]
 VOLUME_MA_STYLE = MA_STYLES["MA_50"]
 OSCILLATOR_LINE_COLOR = CANDLE_UP_COLOR
 CANDLE_WIDTH_RATIO = 0.76
+PRICE_RANGE_MA_MARGIN = 0.25
+PRICE_SCALE_TICKS = 5
+MIN_TEXT_CONTRAST = 3.5
+SIGNAL_LABEL_MIN_GAP = 30
 CANDLE_BODY_FILL = ""
 INDICATOR_BAR_WIDTH_RATIO = 0.84
 ZOOM_IN_FACTOR = 0.88
@@ -97,6 +130,13 @@ SIGNAL_STYLES = (
     ("1차", "FirstSignalDate", "#16a34a"),
     ("2차", "SecondSignalDate", "#f59e0b"),
     ("3차", "ThirdDecisionDate", "#dc2626"),
+)
+
+BUY_MARKER_HORIZONS = (
+    ("3M", 13, "Return3M", "Return3MStatus"),
+    ("6M", 26, "Return6M", "Return6MStatus"),
+    ("9M", 39, "Return9M", "Return9MStatus"),
+    ("12M", 52, "Return12M", "Return12MStatus"),
 )
 
 RETURN_HORIZONS = (
@@ -124,6 +164,10 @@ def format_cycle_return(value, status) -> str:
 def cycle_return_summary(cycle: pd.Series | None) -> str:
     """Build the compact 3/6/9/12-month result shown in the chart header."""
     if cycle is None:
+        return ""
+    statuses = {str(cycle.get(status_column, "")) for _, _, status_column in RETURN_HORIZONS}
+    if statuses == {"해당 없음"}:
+        # Failed or discarded cycles have no returns to show.
         return ""
     return " · ".join(
         f"{label} {format_cycle_return(cycle.get(value_column), cycle.get(status_column))}"
@@ -632,6 +676,7 @@ class ChartPreviewWindow(tk.Toplevel):
         self._draw_oscillator(panels[4], visible, x_positions, "RSI")
         self._draw_oscillator(panels[5], visible, x_positions, "MFI")
         self._draw_signal_lines(panels)
+        self._draw_buy_markers(panels[0], visible)
         self._draw_date_axis(visible, x_positions, panels[-1].bottom)
         self._show_rightmost_values(panels, visible)
         self._redraw_benchmark()
@@ -704,7 +749,7 @@ class ChartPreviewWindow(tk.Toplevel):
         ma_styles = moving_average_styles(self.theme_mode)
         low, high = _price_range(data)
         y = lambda value: _map_y(value, low, high, panel)
-        self._draw_scale(panel, low, high)
+        self._draw_scale(panel, low, high, ticks=PRICE_SCALE_TICKS)
 
         step = (self._plot_edges()[1] - self._plot_edges()[0]) / max(1, len(data))
         candle_half = max(0.7, step * CANDLE_WIDTH_RATIO / 2)
@@ -719,6 +764,7 @@ class ChartPreviewWindow(tk.Toplevel):
                 color,
                 width,
                 tag=f"{column.lower()}_line",
+                clip=(low, high),
             )
 
         for x, (_, row) in zip(xs, data.iterrows()):
@@ -960,11 +1006,16 @@ class ChartPreviewWindow(tk.Toplevel):
         color: str,
         width: float,
         tag: str | None = None,
+        clip: tuple[float, float] | None = None,
     ) -> None:
+        """Draw a polyline; values outside ``clip`` break the line."""
         tags = (tag,) if tag else ()
         points: list[float] = []
         for x, value in zip(xs, series):
-            if pd.isna(value):
+            outside = clip is not None and not pd.isna(value) and not (
+                clip[0] <= float(value) <= clip[1]
+            )
+            if pd.isna(value) or outside:
                 if len(points) >= 4:
                     self.canvas.create_line(
                         *points,
@@ -985,9 +1036,16 @@ class ChartPreviewWindow(tk.Toplevel):
                 tags=tags,
             )
 
-    def _draw_scale(self, panel: Panel, low: float, high: float, compact: bool = False) -> None:
+    def _draw_scale(
+        self,
+        panel: Panel,
+        low: float,
+        high: float,
+        compact: bool = False,
+        ticks: int = 3,
+    ) -> None:
         right = self._plot_edges()[1]
-        for fraction in (0.0, 0.5, 1.0):
+        for fraction in np.linspace(0.0, 1.0, ticks):
             value = high - (high - low) * fraction
             raw_y = panel.top + (panel.bottom - panel.top) * fraction
             y = min(panel.bottom - 8, max(panel.top + 8, raw_y))
@@ -1007,6 +1065,8 @@ class ChartPreviewWindow(tk.Toplevel):
             return
         left, right = self._plot_edges()
         count = self.view_end - self.view_start + 1
+        label_y = panels[0].top + 22
+        previous_label_x: float | None = None
         for label, column, color in SIGNAL_STYLES:
             signal_date = _timestamp(self.cycle.get(column))
             if signal_date is None:
@@ -1023,14 +1083,125 @@ class ChartPreviewWindow(tk.Toplevel):
                 fill=color,
                 width=2,
             )
+            # Signals a week apart would print on top of each other; step down.
+            if previous_label_x is not None and x - previous_label_x < SIGNAL_LABEL_MIN_GAP:
+                label_y += 16
+            else:
+                label_y = panels[0].top + 22
+            previous_label_x = x
             self.canvas.create_text(
                 x + 3,
-                panels[0].top + 22,
+                label_y,
                 text=label,
                 anchor="nw",
                 fill=color,
                 font=(self.ui_font_family, 9, "bold"),
             )
+
+    def _draw_buy_markers(self, panel: Panel, visible: pd.DataFrame) -> None:
+        """Mark the 3rd-signal buy price and the 3/6/9/12-month outcomes."""
+        cycle = self.cycle
+        if cycle is None or visible.empty or cycle.get("Outcome") != "매수 성공":
+            return
+        buy_date = _timestamp(cycle.get("ThirdDecisionDate"))
+        if buy_date is None:
+            return
+        position = int(self.data.index.searchsorted(buy_date, side="left"))
+        if position >= len(self.data) or self.data.index[position] != buy_date:
+            return
+        if position > self.view_end:
+            return
+
+        low, high = _price_range(visible)
+        left, right = self._plot_edges()
+        count = max(1, self.view_end - self.view_start + 1)
+
+        def x_at(index: int) -> float:
+            return left + ((index - self.view_start) + 0.5) / count * (right - left)
+
+        def y_at(value: float) -> float:
+            return _map_y(min(high, max(low, value)), low, high, panel)
+
+        text_color = self.palette["text"]
+        background = self.palette["chart_panel"]
+        buy_close = float(self.data["Close"].iloc[position])
+        line_color = readable_text_color(SIGNAL_STYLES[2][2], background, text_color)
+        if low <= buy_close <= high:
+            start_x = x_at(position) if position >= self.view_start else left
+            buy_y = y_at(buy_close)
+            self.canvas.create_line(
+                start_x,
+                buy_y,
+                right,
+                buy_y,
+                fill=line_color,
+                dash=(5, 3),
+                width=1,
+                tags="buy_marker",
+            )
+            self._create_label_with_background(
+                right - 4,
+                buy_y - 3,
+                text=f"매수 {_number(buy_close)}",
+                anchor="se",
+                fill=line_color,
+            )
+
+        for label, weeks, value_column, status_column in BUY_MARKER_HORIZONS:
+            target = position + weeks
+            if not self.view_start <= target <= self.view_end or target >= len(self.data):
+                continue
+            value = cycle.get(value_column)
+            if cycle.get(status_column) != "확정" or value is None or pd.isna(value):
+                continue
+            x = x_at(target)
+            y = y_at(float(self.data["Close"].iloc[target]))
+            color = readable_text_color(
+                CANDLE_UP_COLOR if float(value) >= 0 else CANDLE_DOWN_COLOR,
+                background,
+                text_color,
+            )
+            self.canvas.create_oval(
+                x - 4, y - 4, x + 4, y + 4, outline=color, width=2, tags="buy_marker"
+            )
+            self._create_label_with_background(
+                x,
+                max(panel.top + 14, y - 7),
+                text=f"{label} {float(value):+.1f}%",
+                anchor="s",
+                fill=color,
+            )
+
+    def _create_label_with_background(
+        self,
+        x: float,
+        y: float,
+        text: str,
+        anchor: str,
+        fill: str,
+    ) -> None:
+        """Draw a small label on a panel-colored box so candles don't hide it."""
+        item = self.canvas.create_text(
+            x,
+            y,
+            text=text,
+            anchor=anchor,
+            fill=fill,
+            font=(self.ui_font_family, 8, "bold"),
+            tags="buy_marker",
+        )
+        box = self.canvas.bbox(item)
+        if box:
+            background = self.canvas.create_rectangle(
+                box[0] - 2,
+                box[1] - 1,
+                box[2] + 2,
+                box[3] + 1,
+                fill=self.palette["chart_panel"],
+                outline="",
+                tags="buy_marker",
+            )
+            self.canvas.tag_raise(item, background)
 
     def _draw_date_axis(self, data: pd.DataFrame, xs: np.ndarray, bottom: float) -> None:
         if data.empty:
@@ -1385,7 +1556,7 @@ class ChartPreviewWindow(tk.Toplevel):
                 panels[1],
                 "volume",
                 [
-                    ("거래량", row["Volume"], self.palette["muted"], True),
+                    ("", row["Volume"], self.palette["muted"], True),
                     ("평균", row["Volume_MA_50"], VOLUME_MA_STYLE[0], True),
                 ],
             ),
@@ -1421,7 +1592,7 @@ class ChartPreviewWindow(tk.Toplevel):
 
         left, _right = self._plot_edges()
         for panel, tag_prefix, values in specifications:
-            x = left + 12 + self.panel_title_font.measure(panel.name)
+            x = left + 16 + self.panel_title_font.measure(panel.name)
             for label, value, color, compact in values:
                 formatted = _compact_number(value) if compact else _number(value)
                 text = f"{label} {formatted}".strip()
@@ -1430,7 +1601,11 @@ class ChartPreviewWindow(tk.Toplevel):
                     panel.top + 5,
                     text=text,
                     anchor="nw",
-                    fill=color,
+                    fill=readable_text_color(
+                        color,
+                        self.palette["chart_panel"],
+                        self.palette["text"],
+                    ),
                     font=self.panel_value_font,
                     tags=("panel_hover_value", f"{tag_prefix}_hover_value"),
                 )
@@ -1585,11 +1760,22 @@ def _map_y(value: float, low: float, high: float, panel: Panel) -> float:
 
 
 def _price_range(data: pd.DataFrame) -> tuple[float, float]:
-    values = pd.concat(
-        [data[["Low", "High"]], data[list(MA_STYLES)]],
-        axis=1,
-    ).to_numpy(dtype=float)
-    return _finite_range(values, padding=0.06)
+    """Fit the price panel to the candles.
+
+    Moving averages only widen the range when they are close to the candles;
+    a far-away 150/200-week line would otherwise squash the candles, so it is
+    clipped at the panel edge instead.
+    """
+    candles = data[["Low", "High"]].to_numpy(dtype=float).reshape(-1)
+    candles = candles[np.isfinite(candles)]
+    averages = data[list(MA_STYLES)].to_numpy(dtype=float).reshape(-1)
+    averages = averages[np.isfinite(averages)]
+    if candles.size == 0:
+        return _finite_range(averages, padding=0.06)
+    low, high = float(candles.min()), float(candles.max())
+    margin = max(high - low, abs(high) * 0.05) * PRICE_RANGE_MA_MARGIN
+    nearby = averages[(averages >= low - margin) & (averages <= high + margin)]
+    return _finite_range(np.concatenate([candles, nearby]), padding=0.06)
 
 
 def price_crosshair_y(

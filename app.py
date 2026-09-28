@@ -209,6 +209,17 @@ RANKING_DISPLAY_COLUMNS = [
     "매수 도달률",
     "종합점수",
 ]
+HISTORY_LEGEND = (
+    ("SuccessHigh", "매수 성공 · 수익", "history_success_high_bg"),
+    ("LossHigh", "매수 성공 · 손실", "history_loss_high_bg"),
+    ("Failure", "3차 실패", "history_failure_bg"),
+    ("Discard", "2차 폐기", "history_discard_bg"),
+)
+HISTORY_LEGEND_COLORS = {key: color_key for key, _label, color_key in HISTORY_LEGEND}
+HORIZON_CARD_MONTHS = (3, 6, 9, 12)
+# Scanner notebook tab positions used by the dashboard cards.
+SCAN_EVENTS_TAB = 0
+ACTIVE_SCENARIOS_TAB = 1
 SIGNAL_VALIDATION_DISPLAY_COLUMNS = [
     "분석 기간",
     "구분",
@@ -358,7 +369,6 @@ class BuyPointApp(tk.Tk):
         self.scan_status_var = tk.StringVar(value="3단계 통합 스캔을 실행하려면 버튼을 눌러 주세요.")
         self.ticker_profile_var = tk.StringVar(value="분야: 미조회")
         self.ticker_cycle_summary_var = tk.StringVar(value="종료 사이클과 매수 도달률을 계산하려면 종목을 검색해 주세요.")
-        self.ticker_return_summary_var = tk.StringVar(value="3·6·9·12개월 성과가 여기에 표시됩니다.")
         self.field_level_var = tk.StringVar(value="섹터")
         self.field_horizon_var = tk.StringVar(value="3개월")
         self.ranking_sort_var = tk.StringVar(value="종합점수")
@@ -432,6 +442,10 @@ class BuyPointApp(tk.Tk):
         populate_table(self.active_tree, active_display)
         self._apply_active_scenario_tags(active_display)
         self._refresh_closed_scenario_view()
+        self._refresh_dashboard()
+        if not self.latest_active_scenarios.empty:
+            # No scan has run yet, so start on the saved scenarios, not an empty tab.
+            self.scan_notebook.select(ACTIVE_SCENARIOS_TAB)
         if startup_warnings:
             self.after(200, self._show_startup_warnings, startup_warnings)
 
@@ -620,6 +634,8 @@ class BuyPointApp(tk.Tk):
                 ],
             )
 
+        self._configure_card_styles(palette)
+
         self.option_add("*TCombobox*Listbox.background", palette["field"])
         self.option_add("*TCombobox*Listbox.foreground", palette["text"])
         self.option_add("*TCombobox*Listbox.selectBackground", palette["selected"])
@@ -642,6 +658,49 @@ class BuyPointApp(tk.Tk):
         chart_window = getattr(self, "chart_window", None)
         if chart_window is not None and chart_window.winfo_exists():
             chart_window.set_theme(self.theme_mode)
+
+    def _configure_card_styles(self, palette: dict[str, str]) -> None:
+        """Styles for the dashboard cards, horizon cards and history legend."""
+        family = self.ui_font_family
+        self.style.configure(
+            "Card.TFrame",
+            background=palette["panel"],
+            bordercolor=palette["border"],
+            lightcolor=palette["border"],
+            darkcolor=palette["border"],
+            relief="solid",
+            borderwidth=1,
+        )
+        card_labels = {
+            "CardTitle.TLabel": (palette["muted"], (family, 9)),
+            "CardValue.TLabel": (palette["text"], (family, 17, "bold")),
+            "CardAlert.TLabel": (palette["signal_third_text"], (family, 17, "bold")),
+            "CardNote.TLabel": (palette["muted"], (family, 9)),
+            "CardNoteAlert.TLabel": (palette["signal_third_text"], (family, 9, "bold")),
+            "CardGood.TLabel": (palette["signal_first_text"], (family, 9, "bold")),
+            "CardBad.TLabel": (palette["signal_third_text"], (family, 9, "bold")),
+            "HorizonValue.TLabel": (palette["text"], (family, 13, "bold")),
+        }
+        for style_name, (foreground, font) in card_labels.items():
+            self.style.configure(
+                style_name,
+                background=palette["panel"],
+                foreground=foreground,
+                font=font,
+            )
+        for key, color_key in HISTORY_LEGEND_COLORS.items():
+            self.style.configure(
+                f"Legend{key}.TLabel",
+                background=palette[color_key],
+                foreground=palette["text"],
+                font=(family, 8),
+                padding=(6, 1),
+            )
+        self.style.configure(
+            "LegendNote.TLabel",
+            foreground=palette["muted"],
+            font=(family, 8),
+        )
 
     def _theme_button_text(self) -> str:
         return "라이트 모드" if self.theme_mode == "dark" else "다크 모드"
@@ -719,7 +778,7 @@ class BuyPointApp(tk.Tk):
         self.center_panel.grid_propagate(False)
         self.center_panel.grid(row=0, column=1, sticky="nsew", padx=(0, 10))
         center_panel = self.center_panel
-        center_panel.rowconfigure(3, weight=1)
+        center_panel.rowconfigure(4, weight=1)
         center_panel.columnconfigure(0, weight=1)
 
         search_frame = ttk.Frame(center_panel)
@@ -769,18 +828,28 @@ class BuyPointApp(tk.Tk):
             textvariable=self.ticker_cycle_summary_var,
             wraplength=history_panel_width - 40,
         ).pack(anchor="w")
+        self._build_horizon_cards(summary_frame)
+
+        legend_frame = ttk.Frame(center_panel, padding=(0, 2, 0, 4))
+        legend_frame.grid(row=3, column=0, sticky="ew")
+        for key, label, _color_key in HISTORY_LEGEND:
+            ttk.Label(
+                legend_frame,
+                text=label,
+                style=f"Legend{key}.TLabel",
+            ).pack(side="left", padx=(0, 4))
         ttk.Label(
-            summary_frame,
-            textvariable=self.ticker_return_summary_var,
-            wraplength=history_panel_width - 40,
-        ).pack(anchor="w")
+            legend_frame,
+            text="색이 진할수록 3·6·9·12개월 결과가 한쪽으로 뚜렷합니다",
+            style="LegendNote.TLabel",
+        ).pack(side="left", padx=(6, 0))
 
         table_frame = ttk.LabelFrame(
             center_panel,
-            text="3단계 신호 과거 기록 (행 더블클릭: 차트 미리보기)",
+            text="3단계 신호 과거 기록 (최신순 · 행 더블클릭: 차트 미리보기)",
             padding=4,
         )
-        table_frame.grid(row=3, column=0, sticky="nsew")
+        table_frame.grid(row=4, column=0, sticky="nsew")
         self.buy_tree = self._create_table(table_frame)
         self._configure_history_tree_tags()
         populate_table(
@@ -800,7 +869,7 @@ class BuyPointApp(tk.Tk):
         self.scanner_panel.grid_propagate(False)
         self.scanner_panel.grid(row=0, column=2, sticky="nsew")
         scanner_panel = self.scanner_panel
-        scanner_panel.rowconfigure(2, weight=1)
+        scanner_panel.rowconfigure(3, weight=1)
         scanner_panel.columnconfigure(0, weight=1)
 
         scan_button_frame = ttk.Frame(scanner_panel)
@@ -823,6 +892,8 @@ class BuyPointApp(tk.Tk):
         )
         self.scan_save_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
+        self._build_dashboard(scanner_panel)
+
         self.scan_status_label = ttk.Label(
             scanner_panel,
             textvariable=self.scan_status_var,
@@ -830,10 +901,10 @@ class BuyPointApp(tk.Tk):
             padding=(0, 6, 0, 6),
             style="ScanStatus.TLabel",
         )
-        self.scan_status_label.grid(row=1, column=0, sticky="ew")
+        self.scan_status_label.grid(row=2, column=0, sticky="ew")
 
         self.scan_notebook = ttk.Notebook(scanner_panel)
-        self.scan_notebook.grid(row=2, column=0, sticky="nsew")
+        self.scan_notebook.grid(row=3, column=0, sticky="nsew")
 
         event_tab = ttk.Frame(self.scan_notebook)
         active_tab = ttk.Frame(self.scan_notebook)
@@ -1302,6 +1373,100 @@ class BuyPointApp(tk.Tk):
             "확정된 매수 성공 사례 기준"
         )
 
+    def _build_dashboard(self, parent: ttk.Frame) -> None:
+        """Summary cards above the scanner tabs; a click opens the matching tab."""
+        frame = ttk.Frame(parent, padding=(0, 8, 0, 0))
+        frame.grid(row=1, column=0, sticky="ew")
+        cards = (
+            ("buy", "이번 스캔 3차 매수", SCAN_EVENTS_TAB),
+            ("wait3", "3차 신호 대기", ACTIVE_SCENARIOS_TAB),
+            ("wait2", "2차 신호 대기", ACTIVE_SCENARIOS_TAB),
+            ("last", "마지막 스캔", None),
+        )
+        self.dashboard_cards: dict[str, dict[str, object]] = {}
+        for column, (key, title, tab_index) in enumerate(cards):
+            frame.columnconfigure(column, weight=1, uniform="dashboard")
+            card = ttk.Frame(frame, style="Card.TFrame", padding=(12, 8))
+            card.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 6, 0))
+            value_var = tk.StringVar(value="-")
+            note_var = tk.StringVar(value="")
+            title_label = ttk.Label(card, text=title, style="CardTitle.TLabel")
+            value_label = ttk.Label(card, textvariable=value_var, style="CardValue.TLabel")
+            note_label = ttk.Label(card, textvariable=note_var, style="CardNote.TLabel")
+            for widget in (title_label, value_label, note_label):
+                widget.pack(anchor="w")
+            if tab_index is not None:
+                for widget in (card, title_label, value_label, note_label):
+                    widget.configure(cursor="hand2")
+                    widget.bind(
+                        "<Button-1>",
+                        lambda _event, index=tab_index: self.scan_notebook.select(index),
+                    )
+            self.dashboard_cards[key] = {
+                "value": value_var,
+                "note": note_var,
+                "value_label": value_label,
+                "note_label": note_label,
+            }
+
+    def _refresh_dashboard(self) -> None:
+        last_scan = self.latest_scan_date
+        if last_scan is None:
+            last_scan = latest_scan_date(self.latest_active_scenarios)
+        summary = dashboard_summary(
+            self.latest_scan_events,
+            self.latest_active_scenarios,
+            scanned_this_session=self.latest_scan_date is not None,
+            last_scan_date=last_scan,
+            today=market_today(),
+        )
+        for key, (value, note, alert) in summary.items():
+            card = self.dashboard_cards[key]
+            card["value"].set(value)
+            card["note"].set(note)
+            card["value_label"].configure(
+                style="CardAlert.TLabel" if alert and key == "buy" else "CardValue.TLabel"
+            )
+            card["note_label"].configure(
+                style="CardNoteAlert.TLabel" if alert else "CardNote.TLabel"
+            )
+
+    def _build_horizon_cards(self, parent: ttk.Frame) -> None:
+        frame = ttk.Frame(parent, padding=(0, 6, 0, 0))
+        frame.pack(fill="x")
+        self.horizon_cards: dict[int, dict[str, object]] = {}
+        for column, months in enumerate(HORIZON_CARD_MONTHS):
+            frame.columnconfigure(column, weight=1, uniform="horizon")
+            card = ttk.Frame(frame, style="Card.TFrame", padding=(10, 6))
+            card.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 6, 0))
+            ttk.Label(card, text=f"{months}개월 후", style="CardTitle.TLabel").pack(anchor="w")
+            labels = {}
+            for name, style in (
+                ("win", "HorizonValue.TLabel"),
+                ("sample", "CardNote.TLabel"),
+                ("nearby", "CardNote.TLabel"),
+                ("sp500", "CardNote.TLabel"),
+            ):
+                variable = tk.StringVar(value="")
+                label = ttk.Label(card, textvariable=variable, style=style)
+                label.pack(anchor="w")
+                labels[name] = (variable, label)
+            self.horizon_cards[months] = labels
+        self._set_horizon_cards(None)
+
+    def _set_horizon_cards(self, performance_by_horizon: dict[int, pd.Series] | None) -> None:
+        for months, labels in self.horizon_cards.items():
+            row = performance_by_horizon.get(months) if performance_by_horizon else None
+            for name, (text, tone) in horizon_card_lines(row).items():
+                variable, label = labels[name]
+                variable.set(text)
+                if name in {"nearby", "sp500"}:
+                    label.configure(
+                        style={"good": "CardGood.TLabel", "bad": "CardBad.TLabel"}.get(
+                            tone, "CardNote.TLabel"
+                        )
+                    )
+
     def _create_top100_table(self, parent: tk.Widget) -> ttk.Treeview:
         frame = ttk.Frame(parent)
         frame.grid(row=2, column=0, sticky="nsew")
@@ -1389,6 +1554,8 @@ class BuyPointApp(tk.Tk):
         self.top100_button.configure(state="disabled")
         self.scan_status_label.configure(style="ScanStatus.TLabel")
         self.scan_status_var.set("Top 100과 활성 시나리오를 통합 스캔하는 중입니다...")
+        self.dashboard_cards["buy"]["value"].set("스캔 중")
+        self.dashboard_cards["buy"]["note"].set("완료되면 결과가 표시됩니다")
         self.scan_tree.delete(*self.scan_tree.get_children())
         self.closed_tree.delete(*self.closed_tree.get_children())
         self.field_tree.delete(*self.field_tree.get_children())
@@ -1776,6 +1943,7 @@ class BuyPointApp(tk.Tk):
         populate_table(self.failure_tree, failures)
         self._refresh_field_analytics(reset_selection=True)
         self._refresh_signal_validation()
+        self._refresh_dashboard()
 
         failed_tickers = ", ".join(failures["티커"].tolist()[:8]) if not failures.empty else ""
         failed_suffix = f": {failed_tickers}" if failed_tickers else ""
@@ -1848,6 +2016,7 @@ class BuyPointApp(tk.Tk):
         self.scan_button.configure(state="normal")
         self.scan_save_button.configure(state="disabled")
         self.top100_button.configure(state="normal")
+        self._refresh_dashboard()
         messagebox.showerror("Top 100 스캔 실패", message)
 
     def save_latest_scan(self) -> None:
@@ -1982,7 +2151,7 @@ class BuyPointApp(tk.Tk):
         if self._chart_is_open():
             selected = self.buy_tree.selection()
             if selected:
-                selected_position = self.buy_tree.index(selected[0])
+                selected_position = self._history_cycle_position(selected[0])
                 chart_position = signal_cycle_position(
                     self.current_signal_cycles,
                     self.chart_window.cycle,
@@ -1995,8 +2164,8 @@ class BuyPointApp(tk.Tk):
         selected = self.buy_tree.selection()
         if not selected or self.current_signal_cycles.empty:
             return
-        position = self.buy_tree.index(selected[0])
-        if position >= len(self.current_signal_cycles):
+        position = self._history_cycle_position(selected[0])
+        if not 0 <= position < len(self.current_signal_cycles):
             return
         if open_window or self._chart_is_open():
             self._show_chart(self.current_signal_cycles.iloc[position])
@@ -2094,11 +2263,15 @@ class BuyPointApp(tk.Tk):
             return
         self._show_chart(self.current_signal_cycles.iloc[target])
 
+    def _history_cycle_position(self, item: str) -> int:
+        """Map a history table row (newest first) to its signal-cycle position."""
+        return len(self.buy_tree.get_children()) - 1 - self.buy_tree.index(item)
+
     def _select_history_position(self, position: int) -> None:
         children = self.buy_tree.get_children()
         if position < 0 or position >= len(children):
             return
-        item = children[position]
+        item = children[len(children) - 1 - position]
         self._syncing_chart_history_selection = True
         try:
             self.buy_tree.selection_set(item)
@@ -2209,7 +2382,7 @@ class BuyPointApp(tk.Tk):
         self.status_var.set(f"{ticker} 주봉 데이터를 불러오는 중입니다...")
         self.ticker_profile_var.set("분야 정보를 확인하는 중입니다...")
         self.ticker_cycle_summary_var.set("시나리오 성과를 계산하는 중입니다...")
-        self.ticker_return_summary_var.set("")
+        self._set_horizon_cards(None)
 
         company = self._company_for_ticker(ticker)
         worker = threading.Thread(
@@ -2325,12 +2498,14 @@ class BuyPointApp(tk.Tk):
         self.current_sp500_data = sp500_data.copy()
         self.current_sp500_warning = sp500_warning
         self.chart_strength_details.update(chart_strength_details)
+        # Newest cycle first; rows map back to cycles via _history_cycle_position.
+        history_rows = history_display.iloc[::-1]
         populate_table(
             self.buy_tree,
-            history_display,
+            history_rows,
             column_bounds=SIGNAL_HISTORY_COLUMN_BOUNDS,
         )
-        self._apply_history_tags(history_display)
+        self._apply_history_tags(history_rows)
 
         count = len(signal_cycles)
         self.status_var.set(
@@ -2352,21 +2527,7 @@ class BuyPointApp(tk.Tk):
             f"3차 매수 도달 {int(base['매수 건수'])}건  |  "
             f"매수 도달률 {format_reach_rate(base['매수 도달률'], base['매수 건수'], base['종료 사이클'])}"
         )
-        horizon_text = []
-        benchmark_text = []
-        for horizon in (3, 6, 9, 12):
-            row = performance_by_horizon[horizon]
-            horizon_text.append(
-                f"{horizon}개월 승률 "
-                f"{format_rate(row['승률'], row['승리'], row['분석 표본'])}"
-            )
-            benchmark_text.append(
-                f"{horizon}개월 기준 대비 {_format_excess(row['기준 대비 초과'])}"
-                f" · S&P 대비 {_format_excess(row['S&P 대비 초과'])}"
-            )
-        self.ticker_return_summary_var.set(
-            "  |  ".join(horizon_text) + "\n" + "  |  ".join(benchmark_text)
-        )
+        self._set_horizon_cards(performance_by_horizon)
         self.search_button.configure(state="normal")
         if self._take_queued_search(ticker):
             # The pending chart request belongs to the queued ticker.
@@ -2380,17 +2541,7 @@ class BuyPointApp(tk.Tk):
             target_cycle = self._latest_cycle()
 
         if self._chart_is_open() or self.open_chart_after_search:
-            children = self.buy_tree.get_children()
-            target_position = (
-                int(target_cycle.name)
-                if target_cycle is not None and isinstance(target_cycle.name, int)
-                else len(children) - 1
-            )
-            if children and 0 <= target_position < len(children):
-                target_item = children[target_position]
-                self.buy_tree.selection_set(target_item)
-                self.buy_tree.focus(target_item)
-                self.buy_tree.see(target_item)
+            # _show_chart also selects the matching history row.
             self._show_chart(target_cycle)
         self.open_chart_after_search = False
         self.pending_chart_first_signal_date = None
@@ -2404,7 +2555,7 @@ class BuyPointApp(tk.Tk):
         self.status_var.set(message)
         self.ticker_profile_var.set("분야: 조회 실패")
         self.ticker_cycle_summary_var.set("성과를 계산하지 못했습니다.")
-        self.ticker_return_summary_var.set("")
+        self._set_horizon_cards(None)
         self.search_button.configure(state="normal")
         queued = self._take_queued_search(ticker)
         if not queued:
@@ -2996,6 +3147,86 @@ def _format_benchmark_rates(display: pd.DataFrame) -> None:
         ),
         axis=1,
     )
+
+
+def dashboard_summary(
+    events: pd.DataFrame,
+    active_scenarios: pd.DataFrame,
+    scanned_this_session: bool,
+    last_scan_date: pd.Timestamp | None,
+    today: pd.Timestamp,
+) -> dict[str, tuple[str, str, bool]]:
+    """Return (value, note, alert) for each dashboard card."""
+    summary: dict[str, tuple[str, str, bool]] = {}
+
+    if not scanned_this_session:
+        summary["buy"] = ("스캔 전", "통합 스캔 후 표시됩니다", False)
+    else:
+        bought = pd.Series(False, index=events.index)
+        if not events.empty and {"단계", "결과"}.issubset(events.columns):
+            bought = (events["단계"] == "3차 신호") & (events["결과"] == "매수 성공")
+        count = int(bought.sum())
+        priority = 0
+        if count and "검토등급" in events.columns:
+            priority = int((bought & (events["검토등급"] == "우선검토")).sum())
+        note = f"우선검토 {priority}건" if count else "이번 스캔 매수 신호 없음"
+        summary["buy"] = (f"{count}건", note, count > 0)
+
+    states = (
+        active_scenarios["현재상태"]
+        if not active_scenarios.empty and "현재상태" in active_scenarios.columns
+        else pd.Series(dtype=object)
+    )
+    summary["wait3"] = (
+        f"{int((states == '3차 신호 대기').sum())}건",
+        "다음 양봉에서 3차 판정",
+        False,
+    )
+    summary["wait2"] = (
+        f"{int((states == '2차 신호 대기').sum())}건",
+        "1차 신호 후 눌림 대기",
+        False,
+    )
+
+    if last_scan_date is None or pd.isna(last_scan_date):
+        summary["last"] = ("기록 없음", "통합 스캔을 실행해 주세요", True)
+    else:
+        last = pd.Timestamp(last_scan_date).normalize()
+        days = max(0, (pd.Timestamp(today).normalize() - last).days)
+        note = "오늘" if days == 0 else f"{days}일 전"
+        stale = days >= 7
+        if stale:
+            note += " · 스캔 필요"
+        summary["last"] = (f"{last:%m/%d}", note, stale)
+    return summary
+
+
+def horizon_card_lines(row: pd.Series | None) -> dict[str, tuple[str, str]]:
+    """Return (text, tone) for each line of one 3/6/9/12-month card."""
+    if row is None:
+        return {"win": ("-", ""), "sample": ("", ""), "nearby": ("", ""), "sp500": ("", "")}
+    sample = int(row.get("분석 표본", 0) or 0)
+    if sample <= 0:
+        return {
+            "win": ("미산출", ""),
+            "sample": ("확정된 매수 없음", ""),
+            "nearby": ("", ""),
+            "sp500": ("", ""),
+        }
+    wins = int(row.get("승리", 0) or 0)
+
+    def comparison(label: str, value: object) -> tuple[str, str]:
+        if value is None or pd.isna(value):
+            return f"{label} 미산출", ""
+        tone = "good" if float(value) > 0 else "bad" if float(value) < 0 else ""
+        return f"{label} {_format_excess(value)}", tone
+
+    return {
+        "win": (f"승률 {float(row['승률']):.1f}%", ""),
+        "sample": (f"{sample}건 중 {wins}건 수익", ""),
+        "nearby": comparison("기준 대비", row.get("기준 대비 초과")),
+        "sp500": comparison("S&P 대비", row.get("S&P 대비 초과")),
+    }
 
 
 def _format_excess(value: object) -> str:

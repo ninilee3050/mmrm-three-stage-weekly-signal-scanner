@@ -327,3 +327,71 @@ def test_empty_benchmark_result_is_reported_as_error() -> None:
     ChartPreviewWindow._finish_benchmark_load(window, pd.DataFrame())
 
     assert errors == ["S&P 500 데이터가 비어 있습니다."]
+
+
+def test_price_range_ignores_far_away_long_moving_averages() -> None:
+    from chart_preview import _price_range
+
+    data = pd.DataFrame(
+        {
+            "Low": [200.0, 210.0],
+            "High": [240.0, 250.0],
+            "MA_5": [230.0, 235.0],
+            "MA_20": [220.0, 225.0],
+            "MA_50": [195.0, 198.0],
+            "MA_150": [140.0, 141.0],
+            "MA_200": [110.0, 112.0],
+        }
+    )
+
+    low, high = _price_range(data)
+
+    assert 180.0 < low < 200.0  # includes MA_50, not the 150/200-week lines
+    assert 250.0 < high < 260.0
+
+
+def test_moving_average_line_breaks_outside_the_price_panel() -> None:
+    window = object.__new__(ChartPreviewWindow)
+    window.canvas = _RecordingCanvas()
+
+    ChartPreviewWindow._draw_line(
+        window,
+        [0.0, 1.0, 2.0, 3.0, 4.0],
+        [10.0, 11.0, 50.0, 12.0, 13.0],
+        lambda value: value,
+        "#000000",
+        1.0,
+        clip=(0.0, 20.0),
+    )
+
+    assert [coordinates for coordinates, _ in window.canvas.lines] == [
+        (0.0, 10.0, 1.0, 11.0),
+        (3.0, 12.0, 4.0, 13.0),
+    ]
+
+
+def test_hover_label_colors_are_made_readable_on_dark_panels() -> None:
+    from chart_preview import MIN_TEXT_CONTRAST, contrast_ratio, readable_text_color
+
+    dark_panel = "#1b1b1b"
+    ma50_blue = MA_STYLES["MA_50"][0]
+
+    assert contrast_ratio(ma50_blue, dark_panel) < MIN_TEXT_CONTRAST
+    adjusted = readable_text_color(ma50_blue, dark_panel, "#c9c9c9")
+    assert contrast_ratio(adjusted, dark_panel) >= MIN_TEXT_CONTRAST
+    assert readable_text_color("#ef4444", "#ffffff", "#111827") == "#ef4444"
+
+
+def test_header_hides_returns_for_cycles_without_a_buy() -> None:
+    cycle = pd.Series(
+        {
+            column: value
+            for label in ("3M", "6M", "9M", "12M")
+            for column, value in (
+                (f"Return{label}", float("nan")),
+                (f"Return{label}Status", "해당 없음"),
+            )
+        }
+    )
+
+    assert cycle_return_summary(cycle) == ""
