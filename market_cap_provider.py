@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -29,7 +29,34 @@ def fetch_us_top_market_cap(limit: int = 100) -> list[MarketCapCompany]:
     companies = parse_stockanalysis_market_cap_table(html)
     if not companies:
         raise MarketCapLoadError("미국 시가총액 순위 목록을 찾지 못했습니다.")
-    return companies[:limit]
+    return common_stock_listings(companies)[:limit]
+
+
+def common_stock_listings(companies: list[MarketCapCompany]) -> list[MarketCapCompany]:
+    """Keep one common-stock listing per company and renumber the ranks.
+
+    The ranking also lists preferred shares (e.g. ``BAC.PRO``) and second
+    share classes (e.g. ``PBR.A``) with the whole company's market cap.
+    Preferred shares are dropped, and only a company's highest-ranked
+    remaining listing is kept, so the next common stocks fill the list.
+    """
+    kept: list[MarketCapCompany] = []
+    seen_companies: set[str] = set()
+    for company in sorted(companies, key=lambda item: item.rank):
+        if _is_preferred_share(company.ticker):
+            continue
+        name = company.company.casefold()
+        if name in seen_companies:
+            continue
+        seen_companies.add(name)
+        kept.append(replace(company, rank=len(kept) + 1))
+    return kept
+
+
+def _is_preferred_share(ticker: str) -> bool:
+    """Preferred shares are listed as ``<ticker>.PR<series>``, e.g. MS.PRE."""
+    _base, separator, suffix = ticker.upper().partition(".")
+    return bool(separator) and suffix.startswith("PR")
 
 
 def parse_stockanalysis_market_cap_table(html: str) -> list[MarketCapCompany]:

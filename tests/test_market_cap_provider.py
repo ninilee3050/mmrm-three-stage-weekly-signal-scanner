@@ -52,3 +52,28 @@ def test_parse_stockanalysis_market_cap_table_extracts_ranked_companies() -> Non
     assert companies[0].company == "NVIDIA Corporation"
     assert companies[0].market_cap == "5.34T"
     assert companies[1].ticker == "GOOGL"
+
+
+def test_preferred_shares_and_second_listings_are_removed_and_ranks_renumbered() -> None:
+    from market_cap_provider import MarketCapCompany, common_stock_listings
+
+    listings = [
+        MarketCapCompany(1, "NVDA", "NVIDIA Corporation", "5.59T"),
+        MarketCapCompany(2, "BRK.B", "Berkshire Hathaway Inc.", "1.08T"),
+        MarketCapCompany(3, "BAC.PRO", "Bank of America Corporation", "396.49B"),
+        MarketCapCompany(4, "BAC", "Bank of America Corporation", "390.06B"),
+        MarketCapCompany(5, "MS.PRE", "Morgan Stanley", "308.32B"),
+        MarketCapCompany(6, "MS", "Morgan Stanley", "304.55B"),
+        MarketCapCompany(7, "PBR", "Petrobras", "126.19B"),
+        MarketCapCompany(8, "PBR.A", "Petrobras", "126.19B"),
+    ]
+
+    kept = common_stock_listings(listings)
+
+    assert [(item.rank, item.ticker) for item in kept] == [
+        (1, "NVDA"),
+        (2, "BRK.B"),
+        (3, "BAC"),
+        (4, "MS"),
+        (5, "PBR"),
+    ]

@@ -187,8 +187,8 @@ FIELD_DISPLAY_COLUMNS = [
     "매수 도달률",
     "분석 표본",
     "승률",
-    "기준 승률",
-    "기준 대비 초과",
+    "평소 매수 승률",
+    "평소 매수 대비 초과",
     "S&P 이긴 비율",
     "S&P 대비 초과",
     "평균 손익률",
@@ -204,7 +204,7 @@ RANKING_DISPLAY_COLUMNS = [
     "중앙값",
     "최고",
     "최저",
-    "기준 대비 초과",
+    "평소 매수 대비 초과",
     "S&P 대비 초과",
     "매수 도달률",
     "종합점수",
@@ -227,8 +227,8 @@ SIGNAL_VALIDATION_DISPLAY_COLUMNS = [
     "구분",
     "분석 표본",
     "승률",
-    "기준 승률",
-    "기준 대비 초과",
+    "평소 매수 승률",
+    "평소 매수 대비 초과",
     "S&P 이긴 비율",
     "S&P 대비 초과",
     "평균 손익률",
@@ -1314,7 +1314,7 @@ class BuyPointApp(tk.Tk):
                 "승률",
                 "평균 손익률",
                 "매수 도달률",
-                "기준 대비 초과",
+                "평소 매수 대비 초과",
                 "S&P 대비 초과",
             ),
             width=14,
@@ -1344,8 +1344,8 @@ class BuyPointApp(tk.Tk):
         ttk.Label(
             parent,
             text=(
-                "기준 승률: 같은 종목을 신호 앞뒤 1년 안의 아무 주에나 샀을 때의 승률입니다. "
-                "신호 승률이 이보다 높고 기준 대비 초과가 플러스여야 매수 타이밍 효과가 "
+                "평소 매수 승률: 같은 종목을 신호 앞뒤 1년 안의 아무 주에나 샀을 때의 승률입니다. "
+                "신호 승률이 이보다 높고 평소 매수 대비 초과가 플러스여야 매수 타이밍 효과가 "
                 "있다고 볼 수 있습니다.  S&P 이긴 비율·S&P 대비 초과: 같은 주에 S&P 500을 "
                 "사서 같은 기간 들고 있었을 때와 비교한 값입니다.  현재 Top 100 종목 기준이라 "
                 "생존편향이 포함되어 있습니다."
@@ -3224,8 +3224,8 @@ def signal_validation_for_display(data: pd.DataFrame) -> pd.DataFrame:
 
 def _format_benchmark_rates(display: pd.DataFrame) -> None:
     """Turn the baseline win rates into text in place (skipped when absent)."""
-    if "기준 승률" in display.columns:
-        display["기준 승률"] = display["기준 승률"].map(
+    if "평소 매수 승률" in display.columns:
+        display["평소 매수 승률"] = display["평소 매수 승률"].map(
             lambda value: "미산출" if pd.isna(value) else f"{float(value):.1f}%"
         )
     required = {"S&P 이긴 비율", "S&P 이긴 건수", "S&P 비교 표본"}
@@ -3348,7 +3348,7 @@ def horizon_card_lines(row: pd.Series | None) -> dict[str, tuple[str, str]]:
     return {
         "win": (f"승률 {float(row['승률']):.1f}%", ""),
         "sample": (f"{sample}건 중 {wins}건 수익", ""),
-        "nearby": comparison("기준 대비", row.get("기준 대비 초과")),
+        "nearby": comparison("평소 매수 대비", row.get("평소 매수 대비 초과")),
         "sp500": comparison("S&P 대비", row.get("S&P 대비 초과")),
     }
 
