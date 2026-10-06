@@ -39,6 +39,11 @@ from scenario_tracker import (
     preserve_failed_active_rows,
     summarize_ticker_cycles,
 )
+from watchlist import (
+    clear_chart_strength_for_weekend_assets,
+    load_watchlist,
+    watchlist_companies,
+)
 from gui.config import (
     ACTIVE_SCENARIO_DISPLAY_COLUMNS,
     CLOSED_RESULT_DISPLAY_COLUMNS,
@@ -187,7 +192,12 @@ class ScanMixin:
                 sp500_warning = f"S&P500 상태 확인 실패: {exc}"
 
             scan_date = market_today()
-            scan_universe = merge_scan_universe(companies, previous_active)
+            # The watchlist is scanned and tracked like the Top 100, but
+            # ``companies`` stays Top 100 only for the field statistics.
+            scan_universe = merge_scan_universe(
+                [*companies, *watchlist_companies(load_watchlist(), companies)],
+                previous_active,
+            )
             (
                 events,
                 active_rows,
@@ -259,6 +269,7 @@ class ScanMixin:
                 chart_strength_reference,
                 reference_error=reference_error,
             )
+            events_df = clear_chart_strength_for_weekend_assets(events_df)
             events_df = annotate_sp500_status(
                 events_df,
                 sp500_data,

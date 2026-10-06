@@ -40,6 +40,13 @@ from scenario_tracker import (
 )
 
 
+from watchlist import (
+    clear_chart_strength_for_weekend_assets,
+    load_watchlist,
+    watchlist_companies,
+)
+
+
 OUTPUT_DIR = Path("outputs")
 TOP100_LIMIT = 100
 RETRY_DELAY_SECONDS = 2
@@ -66,7 +73,13 @@ def main() -> int:
             top100_companies = []
             print(f"경고: {exc} 활성 시나리오 종목만 스캔합니다.")
             warnings.append(f"{exc} 활성 시나리오 종목만 스캔했습니다.")
-        companies = merge_scan_universe(top100_companies, previous_active)
+        companies = merge_scan_universe(
+            [
+                *top100_companies,
+                *watchlist_companies(load_watchlist(), top100_companies),
+            ],
+            previous_active,
+        )
         print("S&P500 주봉 데이터를 한 번 갱신합니다...")
         try:
             sp500_data, sp500_load = load_sp500_context(
@@ -125,6 +138,7 @@ def main() -> int:
             chart_strength_reference,
             reference_error=reference_error,
         )
+        events_df = clear_chart_strength_for_weekend_assets(events_df)
         events_df = annotate_sp500_status(
             events_df,
             sp500_data,

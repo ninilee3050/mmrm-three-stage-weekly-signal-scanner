@@ -257,6 +257,7 @@ class LayoutMixin:
         field_tab = ttk.Frame(self.scan_notebook)
         validation_tab = ttk.Frame(self.scan_notebook)
         failure_tab = ttk.Frame(self.scan_notebook)
+        watchlist_tab = ttk.Frame(self.scan_notebook)
         self.scan_notebook.add(event_tab, text="이번 스캔 신호")
         self.scan_notebook.add(active_tab, text="활성 시나리오")
         self.scan_notebook.add(closed_tab, text="이번 스캔 종료")
@@ -264,6 +265,8 @@ class LayoutMixin:
         self.scan_notebook.add(field_tab, text="분야별 성과")
         self.scan_notebook.add(validation_tab, text="신호 효과 검증")
         self.scan_notebook.add(failure_tab, text="오류")
+        # Added last so the positions of the earlier tabs stay the same.
+        self.scan_notebook.add(watchlist_tab, text="관심종목")
 
         self.scan_tree = self._create_table(event_tab)
         self.active_tree = self._create_table(active_tab)
@@ -339,6 +342,7 @@ class LayoutMixin:
         self._build_field_performance_tab(field_tab)
         self._build_signal_validation_tab(validation_tab)
         self.failure_tree = self._create_table(failure_tab)
+        self._build_watchlist_tab(watchlist_tab)
 
         populate_table(self.scan_tree, pd.DataFrame(columns=SCAN_EVENT_DISPLAY_COLUMNS))
         populate_table(self.active_tree, pd.DataFrame(columns=ACTIVE_SCENARIO_DISPLAY_COLUMNS))

@@ -101,7 +101,18 @@ class AnalyticsMixin:
             key: str(detail.get("grade", ""))
             for key, detail in self.chart_strength_details.items()
         }
-        validation = build_signal_validation(self.latest_cycles_by_ticker, grade_by_key)
+        # Only the ranked companies: watchlist tickers stay out of these statistics.
+        analysis_tickers = {
+            company.ticker.upper() for company in self.latest_analysis_companies
+        }
+        validation = build_signal_validation(
+            {
+                ticker: cycles
+                for ticker, cycles in self.latest_cycles_by_ticker.items()
+                if ticker in analysis_tickers
+            },
+            grade_by_key,
+        )
         populate_table(self.validation_tree, signal_validation_for_display(validation))
         date_text = (
             self.latest_scan_date.strftime("%Y-%m-%d")

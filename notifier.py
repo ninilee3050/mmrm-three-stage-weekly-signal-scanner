@@ -14,6 +14,8 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
+from watchlist import is_weekend_traded
+
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
@@ -92,6 +94,15 @@ def build_scan_message(
     ]
     if failure_count:
         lines.append(f"데이터 오류 {failure_count}건")
+    if not events.empty and "티커" in events.columns:
+        weekend_tickers = sorted(
+            {str(ticker) for ticker in events["티커"] if is_weekend_traded(ticker)}
+        )
+        if weekend_tickers:
+            # Crypto keeps trading after the Friday scan, so its week is not over.
+            lines.append(
+                f"※ {', '.join(weekend_tickers)}: 주말 거래 반영 전 결과입니다."
+            )
     for warning in warnings or []:
         if warning:
             lines.append(f"⚠️ {warning}")
@@ -164,7 +175,9 @@ def _buy_line(row: pd.Series) -> str:
     text = f"{row.get('티커', '')} {row.get('회사명', '')}".strip()
     grade = str(row.get("검토등급", "") or "").strip()
     score = str(row.get("차트 강도", "") or "").strip()
-    detail = " ".join(part for part in (grade, score) if part and part != "nan")
+    detail = " ".join(
+        part for part in (grade, score) if part and part not in {"nan", "해당 없음"}
+    )
     if detail:
         text += f" — {detail}"
     if row.get("신호구분") == "미확인 기간":
