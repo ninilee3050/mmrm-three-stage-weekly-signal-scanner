@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from data_provider import load_weekly_data
+from chart_strength import (
+    ChartStrengthReferenceError,
+    annotate_scan_events,
+    load_chart_strength_reference,
+)
+from data_provider import load_weekly_data, weekly_bar_in_progress
 from indicators import calculate_indicators
 from market_cap_provider import (
     MarketCapCompany,
@@ -14,6 +19,12 @@ from market_cap_provider import (
     fetch_us_top_market_cap_result,
 )
 from market_context import annotate_sp500_status, load_sp500_context
+from notifier import (
+    NotificationError,
+    build_failure_message,
+    build_scan_message,
+    notify_from_environment,
+)
 from scanner import scan_signal_cycles
 from scenario_tracker import (
     ACTIVE_SCENARIO_COLUMNS,
@@ -36,8 +47,9 @@ SCAN_FAILURE_COLUMNS = ["순위", "티커", "회사명", "시가총액", "오류
 
 
 def main() -> int:
+    scan_date = market_today()
+    warnings: list[str] = []
     try:
-        scan_date = market_today()
         previous_active = load_active_scenarios()
         print("미국 시가총액 Top 100 목록과 활성 시나리오를 불러옵니다...")
         try:
@@ -45,6 +57,7 @@ def main() -> int:
             top100_companies = top100.companies
             if top100.warning:
                 print(f"경고: {top100.warning}")
+                warnings.append(top100.warning)
         except MarketCapLoadError as exc:
             # Keep following scenarios that are already active even when the
             # ranking cannot be read; only new first signals are missed.
@@ -52,6 +65,7 @@ def main() -> int:
                 raise
             top100_companies = []
             print(f"경고: {exc} 활성 시나리오 종목만 스캔합니다.")
+            warnings.append(f"{exc} 활성 시나리오 종목만 스캔했습니다.")
         companies = merge_scan_universe(top100_companies, previous_active)
         print("S&P500 주봉 데이터를 한 번 갱신합니다...")
         try:
@@ -64,11 +78,13 @@ def main() -> int:
             sp500_data = pd.DataFrame()
             sp500_warning = f"S&P500 상태 확인 실패: {exc}"
 
+        full_tables_by_ticker: dict[str, pd.DataFrame] = {}
         events, active_rows, closed_results, failures = scan_companies(
             companies,
             scan_date,
             previous_active,
             progress_label="스캔 중",
+            full_tables_by_ticker=full_tables_by_ticker,
         )
         if failures:
             print(f"실패한 {len(failures)}개 종목을 한 번 더 시도합니다...")
@@ -79,6 +95,7 @@ def main() -> int:
                 scan_date,
                 previous_active,
                 progress_label="재시도 중",
+                full_tables_by_ticker=full_tables_by_ticker,
             )
             events.extend(retry_events)
             active_rows.extend(retry_active)
@@ -95,6 +112,18 @@ def main() -> int:
             SCAN_EVENT_COLUMNS,
             by=["신호일", "순위"],
             ascending=[False, True],
+        )
+        try:
+            chart_strength_reference = load_chart_strength_reference()
+            reference_error = None
+        except ChartStrengthReferenceError as exc:
+            chart_strength_reference = None
+            reference_error = str(exc)
+        events_df, _details = annotate_scan_events(
+            events_df,
+            full_tables_by_ticker,
+            chart_strength_reference,
+            reference_error=reference_error,
         )
         events_df = annotate_sp500_status(
             events_df,
@@ -134,6 +163,7 @@ def main() -> int:
         )
     except Exception as exc:
         print(f"스캔 실패: {exc}", file=sys.stderr)
+        _send_notification(build_failure_message(exc, scan_date))
         return 1
 
     first_count = int((events_df["단계"] == "1차 신호").sum()) if not events_df.empty else 0
@@ -159,7 +189,30 @@ def main() -> int:
         print(sp500_warning)
     for path in saved_paths:
         print(f"저장: {path}")
+    if sp500_warning:
+        warnings.append(sp500_warning)
+    week_start = scan_date - pd.Timedelta(days=scan_date.weekday())
+    _send_notification(
+        build_scan_message(
+            events_df,
+            active_df,
+            len(failures_df),
+            scan_date,
+            warnings,
+            provisional=weekly_bar_in_progress(week_start),
+        )
+    )
     return 0
+
+
+def _send_notification(text: str) -> None:
+    """Send the Telegram summary; a delivery problem never fails the scan."""
+    try:
+        sent = notify_from_environment(text)
+    except NotificationError as exc:
+        print(f"경고: {exc}", file=sys.stderr)
+        return
+    print("텔레그램 알림을 보냈습니다." if sent else "텔레그램 설정이 없어 알림을 건너뜁니다.")
 
 
 def scan_companies(
@@ -167,12 +220,14 @@ def scan_companies(
     scan_date: pd.Timestamp,
     previous_active: pd.DataFrame,
     progress_label: str,
+    full_tables_by_ticker: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[
     list[dict[str, object]],
     list[dict[str, object]],
     list[dict[str, object]],
     list[dict[str, object]],
 ]:
+    """Scan each company; ``full_tables_by_ticker`` collects indicator tables."""
     events: list[dict[str, object]] = []
     active_rows: list[dict[str, object]] = []
     closed_results: list[dict[str, object]] = []
@@ -193,6 +248,8 @@ def scan_companies(
             )
             calculated = calculate_indicators(raw_data)
             cycles, full_table = scan_signal_cycles(calculated)
+            if full_tables_by_ticker is not None:
+                full_tables_by_ticker[company.ticker.upper()] = full_table
             ticker_events, active_row, ticker_closed = summarize_ticker_cycles(
                 company,
                 cycles,
