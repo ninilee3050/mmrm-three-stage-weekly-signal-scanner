@@ -24,6 +24,7 @@ from gui.config import (
     TOP100_PANEL_WIDTH,
     UI_SETTINGS_PATH,
 )
+from gui.tooltips import attach_heading_tooltips
 from gui.tables import (
     WINDOW_GEOMETRY_PATTERN,
     _fit_table_columns_to_viewport,
@@ -407,6 +408,7 @@ class LayoutMixin:
         frame.pack(fill="both", expand=True)
 
         tree = ttk.Treeview(frame, show="headings")
+        attach_heading_tooltips(self.term_tooltip, tree)
         tree.bind(
             "<Configure>",
             lambda _event, source=tree: _fit_table_columns_to_viewport(source),

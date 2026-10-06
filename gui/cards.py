@@ -9,6 +9,12 @@ import pandas as pd
 
 from scenario_tracker import latest_scan_date, market_today
 from gui.config import ACTIVE_SCENARIOS_TAB, HORIZON_CARD_MONTHS, SCAN_EVENTS_TAB
+from gui.tooltips import (
+    DASHBOARD_CARD_DESCRIPTIONS,
+    HORIZON_CARD_TERMS,
+    TERM_DESCRIPTIONS,
+    attach_widget_tooltip,
+)
 from gui.formatting import dashboard_summary, horizon_card_lines
 from gui.tables import card_grid_columns
 
@@ -68,6 +74,12 @@ class CardsMixin:
             note_label = ttk.Label(card, textvariable=note_var, style="CardNote.TLabel")
             for widget in (title_label, value_label, note_label):
                 widget.pack(anchor="w")
+            for widget in (card, title_label, value_label, note_label):
+                attach_widget_tooltip(
+                    self.term_tooltip,
+                    widget,
+                    DASHBOARD_CARD_DESCRIPTIONS[key],
+                )
             if tab_index is not None:
                 for widget in (card, title_label, value_label, note_label):
                     widget.configure(cursor="hand2")
@@ -129,6 +141,11 @@ class CardsMixin:
                 label = ttk.Label(card, textvariable=variable, style=style)
                 label.pack(anchor="w")
                 labels[name] = (variable, label)
+                attach_widget_tooltip(
+                    self.term_tooltip,
+                    label,
+                    TERM_DESCRIPTIONS[HORIZON_CARD_TERMS[name]],
+                )
             self.horizon_cards[months] = labels
         self._make_responsive_card_row(frame, horizon_frames, min_card_width=165)
         self._set_horizon_cards(None)
