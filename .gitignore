@@ -7,5 +7,9 @@ venv/
 .vscode/
 .DS_Store
 data/*.csv
+data/*.json
 outputs/*.csv
 outputs/*.json
+build/
+dist/
+*.spec
