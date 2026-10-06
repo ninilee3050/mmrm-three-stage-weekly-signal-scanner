@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from tkinter import messagebox
 
 import pandas as pd
@@ -22,7 +23,7 @@ from indicators import calculate_indicators
 from market_cap_provider import (
     MarketCapCompany,
     MarketCapLoadError,
-    fetch_us_top_market_cap,
+    fetch_us_top_market_cap_result,
 )
 from market_context import annotate_sp500_status, load_sp500_context
 from performance_analytics import build_all_field_outputs
@@ -42,6 +43,7 @@ from gui.config import (
     ACTIVE_SCENARIO_DISPLAY_COLUMNS,
     CLOSED_RESULT_DISPLAY_COLUMNS,
     DOWNLOADS_DIR,
+    SCAN_DOWNLOAD_WORKERS,
     SCAN_EVENT_DISPLAY_COLUMNS,
     SCAN_FAILURE_COLUMNS,
 )
@@ -77,16 +79,23 @@ class ScanMixin:
 
     def _top100_worker(self) -> None:
         try:
-            companies = fetch_us_top_market_cap(limit=100)
+            top100 = fetch_us_top_market_cap_result(limit=100)
         except Exception as exc:
             self.after(0, self._show_top100_error, exc)
             return
 
-        self.after(0, self._show_top100_result, companies)
+        self.after(0, self._show_top100_result, top100.companies, top100.warning)
 
-    def _show_top100_result(self, companies: list[MarketCapCompany]) -> None:
+    def _show_top100_result(
+        self,
+        companies: list[MarketCapCompany],
+        warning: str = "",
+    ) -> None:
         self._populate_top100_table(companies)
-        self.top100_status_var.set(f"{len(companies)}개 종목을 불러왔습니다. 행을 클릭하면 바로 검색합니다.")
+        self.top100_status_var.set(
+            warning
+            or f"{len(companies)}개 종목을 불러왔습니다. 행을 클릭하면 바로 검색합니다."
+        )
         self.top100_button.configure(state="normal")
 
     def _populate_top100_table(self, companies: list[MarketCapCompany]) -> None:
@@ -157,8 +166,14 @@ class ScanMixin:
         try:
             if not companies:
                 self.after(0, self.scan_status_var.set, "Top 100 목록을 먼저 불러오는 중입니다...")
-                companies = fetch_us_top_market_cap(limit=100)
-                self.after(0, self._show_top100_loaded_by_scan, companies)
+                top100 = fetch_us_top_market_cap_result(limit=100)
+                companies = top100.companies
+                self.after(
+                    0,
+                    self._show_top100_loaded_by_scan,
+                    companies,
+                    top100.warning,
+                )
 
             self.after(0, self.scan_status_var.set, "S&P500 주봉 데이터를 갱신하는 중입니다...")
             try:
@@ -346,12 +361,17 @@ class ScanMixin:
             return
 
         # Saving is separate so a file left open in Excel cannot discard the scan.
+        scanned_at = pd.Timestamp.now().floor("s")
         unsaved_state = (
             sector_output,
             industry_output,
             ranking_output,
             active_df,
             closed_scenarios_df,
+            events_df,
+            closed_df,
+            failures_df,
+            scanned_at,
         )
         save_warning = ""
         try:
@@ -380,11 +400,19 @@ class ScanMixin:
             sp500_warning,
             unsaved_state,
             save_warning,
+            scanned_at,
         )
 
-    def _show_top100_loaded_by_scan(self, companies: list[MarketCapCompany]) -> None:
+    def _show_top100_loaded_by_scan(
+        self,
+        companies: list[MarketCapCompany],
+        warning: str = "",
+    ) -> None:
         self._populate_top100_table(companies)
-        self.top100_status_var.set(f"{len(companies)}개 종목을 불러왔습니다. 이 목록을 기준으로 스캔합니다.")
+        self.top100_status_var.set(
+            warning
+            or f"{len(companies)}개 종목을 불러왔습니다. 이 목록을 기준으로 스캔합니다."
+        )
 
     def _scan_companies(
         self,
@@ -413,36 +441,46 @@ class ScanMixin:
         }
         last_scan_date = latest_scan_date(previous_active)
 
-        for index, company in enumerate(companies, start=1):
-            self.after(
-                0,
-                self.scan_status_var.set,
-                f"{progress_label}... {index}/{total} {company.ticker}",
+        def scan_one(company: MarketCapCompany):
+            raw_data = load_weekly_data(
+                company.ticker,
+                include_current_week=True,
+                force_refresh=True,
             )
-            try:
-                raw_data = load_weekly_data(
-                    company.ticker,
-                    include_current_week=True,
-                    force_refresh=True,
+            calculated = calculate_indicators(raw_data)
+            cycles, full_table = scan_signal_cycles(calculated)
+            summary = summarize_ticker_cycles(
+                company,
+                cycles,
+                full_table,
+                scan_date,
+                previous_active=previous_by_ticker.get(company.ticker.upper()),
+                last_scan_date=last_scan_date,
+            )
+            return cycles, full_table, summary
+
+        # Downloads dominate the scan time, so fetch several tickers at once.
+        # Results are still collected in ranking order.
+        with ThreadPoolExecutor(max_workers=SCAN_DOWNLOAD_WORKERS) as executor:
+            futures = [executor.submit(scan_one, company) for company in companies]
+            for index, (company, future) in enumerate(zip(companies, futures), start=1):
+                self.after(
+                    0,
+                    self.scan_status_var.set,
+                    f"{progress_label}... {index}/{total} {company.ticker}",
                 )
-                calculated = calculate_indicators(raw_data)
-                cycles, full_table = scan_signal_cycles(calculated)
-                cycles_by_ticker[company.ticker.upper()] = cycles.copy()
-                full_tables_by_ticker[company.ticker.upper()] = full_table.copy()
-                ticker_events, active_row, ticker_closed = summarize_ticker_cycles(
-                    company,
-                    cycles,
-                    full_table,
-                    scan_date,
-                    previous_active=previous_by_ticker.get(company.ticker.upper()),
-                    last_scan_date=last_scan_date,
-                )
+                try:
+                    cycles, full_table, summary = future.result()
+                except Exception as exc:
+                    failures.append({"company": company, "error": str(exc)})
+                    continue
+                ticker_events, active_row, ticker_closed = summary
+                cycles_by_ticker[company.ticker.upper()] = cycles
+                full_tables_by_ticker[company.ticker.upper()] = full_table
                 events.extend(ticker_events)
                 closed_results.extend(ticker_closed)
                 if active_row is not None:
                     active_rows.append(active_row)
-            except Exception as exc:
-                failures.append({"company": company, "error": str(exc)})
 
         return (
             events,
@@ -470,10 +508,12 @@ class ScanMixin:
         ranking_output: pd.DataFrame,
         sp500_data: pd.DataFrame,
         sp500_warning: str,
-        unsaved_state: tuple[pd.DataFrame, ...] | None = None,
+        unsaved_state: tuple[object, ...] | None = None,
         save_warning: str = "",
+        scanned_at: pd.Timestamp | None = None,
     ) -> None:
         self.unsaved_scan_state = unsaved_state
+        self.last_scan_time = scanned_at if scanned_at is not None else pd.Timestamp.now()
         self.latest_scan_events = events.copy()
         self.chart_strength_details = dict(chart_strength_details)
         self.latest_active_scenarios = active_scenarios.copy()
@@ -570,6 +610,27 @@ class ScanMixin:
                 + save_warning
                 + "\n\n파일을 닫은 뒤 '스캔 저장하기'를 누르면 다시 저장합니다.",
             )
+
+    def _show_restored_scan(self) -> None:
+        """Show the tables saved by the previous scan (app start, before a scan)."""
+        scan_display = scanner_table_for_display(
+            self.latest_scan_events,
+            SCAN_EVENT_DISPLAY_COLUMNS,
+        )
+        populate_table(self.scan_tree, scan_display)
+        self._apply_scan_event_tags(scan_display)
+        populate_table(
+            self.closed_tree,
+            scanner_table_for_display(
+                self.latest_closed_results,
+                CLOSED_RESULT_DISPLAY_COLUMNS,
+            ),
+        )
+        populate_table(self.failure_tree, self.latest_scan_failures)
+        self.scan_status_var.set(
+            f"마지막 스캔 결과입니다 ({self.last_scan_time:%m/%d %H:%M} 기준). "
+            "최신 결과를 보려면 3단계 통합 스캔을 눌러 주세요."
+        )
 
     def _show_scan_error(self, exc: Exception) -> None:
         if isinstance(exc, MarketCapLoadError):

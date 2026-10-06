@@ -887,7 +887,7 @@ def test_dashboard_before_any_scan_uses_saved_state() -> None:
     summary = dashboard_summary(
         pd.DataFrame(),
         active,
-        scanned_this_session=False,
+        has_scan_results=False,
         last_scan_date=pd.Timestamp("2026-09-18"),
         today=pd.Timestamp("2026-09-28"),
     )
@@ -912,7 +912,7 @@ def test_dashboard_counts_this_scans_buys_and_priority() -> None:
     summary = dashboard_summary(
         events,
         pd.DataFrame(),
-        scanned_this_session=True,
+        has_scan_results=True,
         last_scan_date=pd.Timestamp("2026-09-28"),
         today=pd.Timestamp("2026-09-28"),
     )
@@ -997,3 +997,109 @@ def test_cards_wrap_to_two_rows_only_when_narrow() -> None:
     assert card_grid_columns(900, 4, 170) == 4
     assert card_grid_columns(600, 4, 170) == 2
     assert card_grid_columns(100, 2, 170) == 2
+
+
+def test_table_cells_sort_by_number_date_or_text() -> None:
+    from gui.tables import sorted_row_order, table_sort_key
+
+    assert table_sort_key("61.0% (3/4)") == (0, 61.0)
+    assert table_sort_key("+12.35%") == (0, 12.35)
+    assert table_sort_key("-2.19%p") == (0, -2.19)
+    assert table_sort_key("5.59T") == (0, 5.59e12)
+    assert table_sort_key("396.49B") == (0, 396.49e9)
+    assert table_sort_key("1,177") == (0, 1177.0)
+    assert table_sort_key("2026-08-17") == (1, "2026-08-17")
+    assert table_sort_key("3차 신호 대기") == (1, "3차 신호 대기")
+    assert table_sort_key("해당 없음") is None
+    assert table_sort_key("미산출 (0건)") is None
+
+    rates = ["36.4% (4/11)", "해당 없음", "100.0% (4/4)", "", "63.6% (7/11)"]
+    assert sorted_row_order(rates, descending=True) == [2, 4, 0, 1, 3]
+    assert sorted_row_order(rates, descending=False) == [0, 4, 2, 1, 3]
+    assert sorted_row_order(["BAC", "aapl", "MSFT"], descending=False) == [1, 0, 2]
+
+
+def test_last_scan_tables_round_trip(tmp_path) -> None:
+    from gui.storage import load_last_scan, save_last_scan
+
+    paths = {name: tmp_path / f"{name}.csv" for name in ("events", "closed_results", "failures")}
+    info = tmp_path / "last_scan.json"
+    events = pd.DataFrame(
+        [{"티커": "NVDA", "단계": "3차 신호", "결과": "매수 성공", "신호일": pd.Timestamp("2026-09-28")}]
+    )
+    empty = pd.DataFrame(columns=["티커", "오류"])
+
+    assert load_last_scan(paths, info) is None
+    save_last_scan(events, empty, empty, pd.Timestamp("2026-10-06 22:40:05"), paths, info)
+    restored_events, closed, failures, scanned_at = load_last_scan(paths, info)
+
+    assert restored_events.loc[0, "결과"] == "매수 성공"
+    assert restored_events.loc[0, "신호일"] == pd.Timestamp("2026-09-28")
+    assert closed.empty and failures.empty
+    assert scanned_at == pd.Timestamp("2026-10-06 22:40:05")
+
+
+def test_dashboard_uses_restored_scan_time() -> None:
+    from gui.formatting import dashboard_summary
+
+    summary = dashboard_summary(
+        pd.DataFrame(columns=["단계", "결과"]),
+        pd.DataFrame(),
+        has_scan_results=True,
+        last_scan_date=None,
+        today=pd.Timestamp("2026-10-06"),
+        last_scan_time=pd.Timestamp("2026-10-05 22:40"),
+        now=pd.Timestamp("2026-10-06 09:00"),
+    )
+
+    assert summary["buy"] == ("0건", "이번 스캔 매수 신호 없음", False)
+    assert summary["last"] == ("10/05 22:40", "1일 전", False)
+
+
+def test_text_starting_with_a_digit_is_not_sorted_as_a_number() -> None:
+    from gui.tables import table_sort_key
+
+    assert table_sort_key("3M Company") == (1, "3m company")
+    assert table_sort_key("2차 이격 과다 폐기") == (1, "2차 이격 과다 폐기")
+    assert table_sort_key("3개월") == (0, 3.0)
+    assert table_sort_key("82.5점") == (0, 82.5)
+    assert table_sort_key("10건") == (0, 10.0)
+
+
+def test_saved_window_placement_is_restored_and_kept_on_screen() -> None:
+    from gui.tables import restored_window_placement
+
+    saved = {"width": 2400, "height": 900, "x": 300, "y": 120}
+
+    assert restored_window_placement(saved, 3501, 820, 5120, 1440) == (2400, 900, 300, 120)
+    # The same settings file opened on a small laptop.
+    assert restored_window_placement(saved, 3501, 820, 1366, 768) == (1326, 688, 40, 80)
+    # No or broken saved state: default size, centered.
+    assert restored_window_placement(None, 3501, 820, 5120, 1440) == (3501, 820, 809, 206)
+    assert restored_window_placement({"width": "x"}, 1000, 700, 1920, 1080) == (
+        1000,
+        700,
+        460,
+        126,
+    )
+
+
+def test_saved_dividers_scale_with_the_window_or_are_dropped() -> None:
+    from gui.tables import scaled_sash_positions
+
+    assert scaled_sash_positions([400, 1200], 2000, 2000, 2) == [400, 1200]
+    assert scaled_sash_positions([400, 1200], 2000, 1000, 2) == [200, 600]
+    assert scaled_sash_positions([400, 1200], 2000, 1000, 1) is None  # Top 100 folded now
+    assert scaled_sash_positions(None, None, 1000, 1) is None
+    assert scaled_sash_positions([1200, 400], 2000, 2000, 2) is None
+
+
+def test_settings_updates_keep_other_values(tmp_path) -> None:
+    from ui_theme import load_settings, load_theme, save_theme, update_settings
+
+    path = tmp_path / "ui_settings.json"
+    update_settings(path, window={"width": 1200, "tab": 3})
+    save_theme(path, "dark")
+
+    assert load_theme(path) == "dark"
+    assert load_settings(path)["window"] == {"width": 1200, "tab": 3}

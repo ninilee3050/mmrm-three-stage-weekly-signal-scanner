@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
@@ -131,7 +132,9 @@ def populate_table(
     tree: ttk.Treeview,
     data: pd.DataFrame,
     column_bounds: dict[str, tuple[int, int]] | None = None,
+    sortable: bool = True,
 ) -> None:
+    """Fill a table; clicking a heading sorts by that column unless disabled."""
     tree.delete(*tree.get_children())
     columns = list(data.columns)
     tree["columns"] = columns
@@ -161,8 +164,17 @@ def populate_table(
                 max(_column_width(column), measured_width),
                 maximum_width,
             )
-        tree.heading(column, text=column)
+        tree.heading(
+            column,
+            text=column,
+            command=(
+                (lambda name=column: sort_table_by_column(tree, name))
+                if sortable
+                else ""
+            ),
+        )
         tree.column(column, width=display_width, minwidth=60, stretch=False)
+    tree._mmrm_sort_state = None
 
     for values in formatted_rows:
         tree.insert("", "end", values=values)
@@ -172,6 +184,65 @@ def populate_table(
         for column in columns
     }
     tree.after_idle(lambda source=tree: _fit_table_columns_to_viewport(source))
+
+
+WINDOW_GEOMETRY_PATTERN = re.compile(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$")
+SORT_BLANK_TEXTS = {"", "-", "해당 없음", "진행 중", "산정 대기", "미산출", "데이터 없음"}
+SORT_UNIT_MULTIPLIERS = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}
+_SORT_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}")
+# A number, an optional unit, and optionally a "(3/4)" style detail; nothing else.
+_SORT_NUMBER_PATTERN = re.compile(
+    r"^([+-]?[\d,]*\.?\d+)\s*([KMBT])?(?:%p|%|점|건|개월|개)?(?:\s*\(.*\))?$"
+)
+
+
+def table_sort_key(text: object) -> tuple[int, float | str] | None:
+    """Sort key for one displayed cell; ``None`` for cells that sort last.
+
+    Numbers sort by value ("61.0% (3/4)" -> 61.0, "5.59T" -> 5.59e12) and come
+    before plain text; dates sort as text, which works for YYYY-MM-DD.
+    """
+    value = str(text).strip()
+    if value in SORT_BLANK_TEXTS or value.startswith("미산출"):
+        return None
+    if not _SORT_DATE_PATTERN.match(value):
+        match = _SORT_NUMBER_PATTERN.match(value)
+        if match:
+            number = float(match.group(1).replace(",", ""))
+            return 0, number * SORT_UNIT_MULTIPLIERS.get(match.group(2) or "", 1.0)
+    return 1, value.casefold()
+
+
+def sorted_row_order(texts: list[object], descending: bool) -> list[int]:
+    """Row positions sorted by their cell text; blank cells always go last."""
+    keyed = [(table_sort_key(text), index) for index, text in enumerate(texts)]
+    filled = sorted(
+        (item for item in keyed if item[0] is not None),
+        key=lambda item: item[0],
+        reverse=descending,
+    )
+    blank = [item for item in keyed if item[0] is None]
+    return [index for _key, index in filled + blank]
+
+
+def sort_table_by_column(tree: ttk.Treeview, column: str) -> None:
+    """Sort rows by a column; a second click on the same heading reverses it."""
+    items = list(tree.get_children())
+    texts = [tree.set(item, column) for item in items]
+    keys = [key for key in map(table_sort_key, texts) if key is not None]
+    numeric = bool(keys) and sum(kind == 0 for kind, _value in keys) * 2 >= len(keys)
+    previous = getattr(tree, "_mmrm_sort_state", None)
+    if previous is not None and previous[0] == column:
+        descending = not previous[1]
+    else:
+        # Largest first is the useful default for rates, returns and scores.
+        descending = numeric
+    for position, index in enumerate(sorted_row_order(texts, descending)):
+        tree.move(items[index], "", position)
+    tree._mmrm_sort_state = (column, descending)
+    for name in tree["columns"]:
+        marker = (" ▼" if descending else " ▲") if name == column else ""
+        tree.heading(name, text=f"{name}{marker}")
 
 
 def _fit_table_columns_to_viewport(tree: ttk.Treeview) -> None:
@@ -320,6 +391,58 @@ def fit_window_to_screen(
     fitted_width = max(min_width, min(width, screen_width - 40))
     fitted_height = max(min_height, min(height, screen_height - 80))
     return fitted_width, fitted_height
+
+
+def restored_window_placement(
+    saved: object,
+    default_width: int,
+    default_height: int,
+    screen_width: int,
+    screen_height: int,
+) -> tuple[int, int, int, int]:
+    """Return (width, height, x, y) from saved window state, kept on screen.
+
+    Without usable saved state the default size is centered as on first start.
+    A size or position saved on a larger monitor is pulled back onto this one.
+    """
+    width, height, x, y = default_width, default_height, None, None
+    if isinstance(saved, dict):
+        try:
+            width, height = int(saved["width"]), int(saved["height"])
+            x, y = int(saved["x"]), int(saved["y"])
+        except (KeyError, TypeError, ValueError):
+            width, height, x, y = default_width, default_height, None, None
+    width, height = fit_window_to_screen(width, height, screen_width, screen_height)
+    if x is None or y is None:
+        return (
+            width,
+            height,
+            max(0, (screen_width - width) // 2),
+            max(0, (screen_height - height) // 3),
+        )
+    x = min(max(0, x), max(0, screen_width - width))
+    y = min(max(0, y), max(0, screen_height - height))
+    return width, height, x, y
+
+
+def scaled_sash_positions(
+    saved_positions: object,
+    saved_total: object,
+    total_width: int,
+    expected_count: int,
+) -> list[int] | None:
+    """Saved divider positions rescaled to the current width, if still usable."""
+    if not isinstance(saved_positions, list) or len(saved_positions) != expected_count:
+        return None
+    try:
+        positions = [int(position) for position in saved_positions]
+        scale = total_width / int(saved_total)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    scaled = [int(position * scale) for position in positions]
+    if scaled != sorted(scaled) or not all(0 < p < total_width for p in scaled):
+        return None
+    return scaled
 
 
 def card_grid_columns(width: int, count: int, min_card_width: int) -> int:

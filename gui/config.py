@@ -11,6 +11,12 @@ OUTPUT_DIR = Path("outputs")
 DOWNLOADS_DIR = Path.home() / "Downloads"
 UI_SETTINGS_PATH = OUTPUT_DIR / "ui_settings.json"
 CLOSED_SCENARIO_PATH = OUTPUT_DIR / "mmrm_closed_scenarios.csv"
+LAST_SCAN_INFO_PATH = OUTPUT_DIR / "mmrm_last_scan.json"
+LAST_SCAN_TABLE_PATHS = {
+    "events": OUTPUT_DIR / "mmrm_last_scan_events.csv",
+    "closed_results": OUTPUT_DIR / "mmrm_last_scan_closed.csv",
+    "failures": OUTPUT_DIR / "mmrm_last_scan_failures.csv",
+}
 SIGNAL_HISTORY_DISPLAY_COLUMNS = [
     "1차신호일",
     "2차신호일",
@@ -170,6 +176,7 @@ HISTORY_LEGEND_COLORS = {key: color_key for key, _label, color_key in HISTORY_LE
 HORIZON_CARD_MONTHS = (3, 6, 9, 12)
 TOP100_PANEL_WIDTH = 490
 MIN_WINDOW_SIZE = (960, 600)
+SCAN_DOWNLOAD_WORKERS = 8
 # Scanner notebook tab positions used by the dashboard cards.
 SCAN_EVENTS_TAB = 0
 ACTIVE_SCENARIOS_TAB = 1

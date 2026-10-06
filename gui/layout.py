@@ -7,6 +7,7 @@ from tkinter import ttk
 
 import pandas as pd
 
+from ui_theme import load_settings
 from gui.config import (
     ACTIVE_SCENARIO_DISPLAY_COLUMNS,
     CLOSED_RESULT_DISPLAY_COLUMNS,
@@ -21,13 +22,16 @@ from gui.config import (
     SIGNAL_HISTORY_DISPLAY_COLUMNS,
     SIGNAL_VALIDATION_DISPLAY_COLUMNS,
     TOP100_PANEL_WIDTH,
+    UI_SETTINGS_PATH,
 )
 from gui.tables import (
+    WINDOW_GEOMETRY_PATTERN,
     _fit_table_columns_to_viewport,
     _table_required_width,
     default_sash_positions,
-    fit_window_to_screen,
     populate_table,
+    restored_window_placement,
+    scaled_sash_positions,
 )
 
 
@@ -55,14 +59,23 @@ class LayoutMixin:
         )
         full_width = left_panel_width + history_panel_width + scanner_panel_width + 48
         screen_width, screen_height = self._screen_size()
-        width, height = fit_window_to_screen(full_width, 820, screen_width, screen_height)
-        x = max(0, (screen_width - width) // 2)
-        y = max(0, (screen_height - height) // 3)
+        saved_window = load_settings(UI_SETTINGS_PATH).get("window")
+        self._saved_window = saved_window if isinstance(saved_window, dict) else {}
+        width, height, x, y = restored_window_placement(
+            self._saved_window,
+            full_width,
+            820,
+            screen_width,
+            screen_height,
+        )
         self.geometry(f"{width}x{height}+{x}+{y}")
         self._history_panel_width = history_panel_width
         self._scanner_panel_width = scanner_panel_width
-        # A wide enough screen shows all three areas; otherwise Top 100 starts folded.
-        self.top100_visible = width >= full_width
+        if "top100_visible" in self._saved_window:
+            self.top100_visible = bool(self._saved_window["top100_visible"])
+        else:
+            # A wide enough screen shows all three areas; otherwise Top 100 starts folded.
+            self.top100_visible = width >= full_width
 
         main_frame = ttk.Frame(self, padding=14)
         main_frame.pack(fill="both", expand=True)
@@ -182,6 +195,7 @@ class LayoutMixin:
             self.buy_tree,
             pd.DataFrame(columns=SIGNAL_HISTORY_DISPLAY_COLUMNS),
             column_bounds=SIGNAL_HISTORY_COLUMN_BOUNDS,
+            sortable=False,
         )
         self.buy_tree.bind("<<TreeviewSelect>>", self._on_history_select)
         self.buy_tree.bind("<Double-1>", self._on_history_double_click)
@@ -197,7 +211,7 @@ class LayoutMixin:
             self.main_panes.add(self.left_panel, weight=0)
         self.main_panes.add(self.center_panel, weight=2)
         self.main_panes.add(self.scanner_panel, weight=3)
-        self.after_idle(self._apply_default_pane_widths)
+        self.after_idle(self._apply_initial_pane_widths)
         scanner_panel = self.scanner_panel
         scanner_panel.rowconfigure(3, weight=1)
         scanner_panel.columnconfigure(0, weight=1)
@@ -505,6 +519,46 @@ class LayoutMixin:
         self.top100_visible = not self.top100_visible
         self.top100_toggle_button.configure(text=self._top100_toggle_text())
         self.after_idle(self._apply_default_pane_widths)
+
+    def _apply_initial_pane_widths(self) -> None:
+        """Restore the maximized state and divider positions of the last session."""
+        if self._saved_window.get("zoomed"):
+            self.state("zoomed")
+        self.update_idletasks()
+        total = self.main_panes.winfo_width()
+        if total <= 1:
+            self.after(50, self._apply_initial_pane_widths)
+            return
+        positions = scaled_sash_positions(
+            self._saved_window.get("sashes"),
+            self._saved_window.get("pane_width"),
+            total,
+            expected_count=2 if self.top100_visible else 1,
+        )
+        if positions is None:
+            self._apply_default_pane_widths()
+            return
+        for index, position in enumerate(positions):
+            self.main_panes.sashpos(index, position)
+
+    def _window_state(self) -> dict[str, object]:
+        """What to remember about the window for the next start."""
+        state = dict(self._saved_window)
+        zoomed = self.state() == "zoomed"
+        match = WINDOW_GEOMETRY_PATTERN.match(self.geometry())
+        if match and not zoomed:
+            # While maximized, keep the size the window had before maximizing.
+            width, height, x, y = (int(value) for value in match.groups())
+            state.update(width=width, height=height, x=x, y=y)
+        pane_count = 2 if self.top100_visible else 1
+        state.update(
+            zoomed=zoomed,
+            top100_visible=self.top100_visible,
+            sashes=[self.main_panes.sashpos(index) for index in range(pane_count)],
+            pane_width=self.main_panes.winfo_width(),
+            tab=self.scan_notebook.index("current"),
+        )
+        return state
 
     def _apply_default_pane_widths(self) -> None:
         self.update_idletasks()

@@ -255,6 +255,7 @@ class SearchMixin:
             self.buy_tree,
             history_rows,
             column_bounds=SIGNAL_HISTORY_COLUMN_BOUNDS,
+            sortable=False,
         )
         self._apply_history_tags(history_rows)
 
