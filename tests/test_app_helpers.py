@@ -1103,3 +1103,53 @@ def test_settings_updates_keep_other_values(tmp_path) -> None:
 
     assert load_theme(path) == "dark"
     assert load_settings(path)["window"] == {"width": 1200, "tab": 3}
+
+
+def test_every_table_column_has_a_hover_explanation() -> None:
+    import gui.config as config
+    from gui.tooltips import TERM_DESCRIPTIONS
+    from gui.watchlist_tab import WATCHLIST_DISPLAY_COLUMNS
+
+    column_lists = [
+        config.SIGNAL_HISTORY_DISPLAY_COLUMNS,
+        config.SCAN_EVENT_DISPLAY_COLUMNS,
+        config.ACTIVE_SCENARIO_DISPLAY_COLUMNS,
+        config.CLOSED_RESULT_DISPLAY_COLUMNS,
+        config.CLOSED_SCENARIO_DISPLAY_COLUMNS,
+        config.FIELD_DISPLAY_COLUMNS,
+        config.RANKING_DISPLAY_COLUMNS,
+        config.SIGNAL_VALIDATION_DISPLAY_COLUMNS,
+        config.SCAN_FAILURE_COLUMNS,
+        WATCHLIST_DISPLAY_COLUMNS,
+    ]
+    columns = {column for columns in column_lists for column in columns}
+
+    assert columns - set(TERM_DESCRIPTIONS) == set()
+
+
+def test_heading_explanation_ignores_the_sort_marker() -> None:
+    from gui.tooltips import TERM_DESCRIPTIONS, term_description
+
+    assert term_description("승률 ▼") == TERM_DESCRIPTIONS["승률"]
+    assert term_description("평소 매수 대비 초과 ▲") == TERM_DESCRIPTIONS["평소 매수 대비 초과"]
+    assert term_description("없는 컬럼") == ""
+
+
+def test_hover_explanation_waits_and_is_cancelled_when_the_pointer_leaves() -> None:
+    from gui.tooltips import HOVER_DELAY_MS, HoverTooltip
+
+    scheduled, cancelled = [], []
+    owner = SimpleNamespace(
+        after=lambda delay, *args: scheduled.append((delay, args)) or f"job{len(scheduled)}",
+        after_cancel=cancelled.append,
+    )
+    tooltip = HoverTooltip(owner, "Arial")
+
+    tooltip.schedule("heading", "설명", 10, 20)
+    tooltip.schedule("heading", "설명", 11, 21)  # still on the same heading
+
+    assert [delay for delay, _args in scheduled] == [HOVER_DELAY_MS]
+    tooltip.cancel()
+    assert cancelled == ["job1"]
+    tooltip.schedule("other", "", 0, 0)  # nothing to explain
+    assert len(scheduled) == 1

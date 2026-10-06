@@ -32,6 +32,7 @@ from gui.scan_results import prioritize_active_scenarios
 from gui.storage import load_closed_scenarios, load_last_scan
 from gui.tables import ChartStrengthTooltip, populate_table
 from gui.theme import ThemeMixin
+from gui.tooltips import HoverTooltip
 from gui.layout import LayoutMixin
 from gui.cards import CardsMixin
 from gui.scan import ScanMixin
@@ -143,6 +144,7 @@ class BuyPointApp(
             self,
             self.ui_font_family,
         )
+        self.term_tooltip = HoverTooltip(self, self.ui_font_family)
         self.chart_strength_details: dict[
             tuple[str, str], dict[str, object]
         ] = {}
