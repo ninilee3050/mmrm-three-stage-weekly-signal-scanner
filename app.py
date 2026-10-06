@@ -38,6 +38,7 @@ from gui.scan import ScanMixin
 from gui.search import SearchMixin
 from gui.history import HistoryChartMixin
 from gui.analytics import AnalyticsMixin
+from gui.watchlist_tab import WatchlistMixin
 
 
 class BuyPointApp(
@@ -48,6 +49,7 @@ class BuyPointApp(
     SearchMixin,
     HistoryChartMixin,
     AnalyticsMixin,
+    WatchlistMixin,
     tk.Tk,
 ):
     """Main window. Each mixin holds one area of the screen."""
