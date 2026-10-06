@@ -90,9 +90,13 @@ class CardsMixin:
         summary = dashboard_summary(
             self.latest_scan_events,
             self.latest_active_scenarios,
-            scanned_this_session=self.latest_scan_date is not None,
+            has_scan_results=(
+                self.latest_scan_date is not None or self.last_scan_time is not None
+            ),
             last_scan_date=last_scan,
             today=market_today(),
+            last_scan_time=self.last_scan_time,
+            now=pd.Timestamp.now(),
         )
         for key, (value, note, alert) in summary.items():
             card = self.dashboard_cards[key]

@@ -128,18 +128,31 @@ def theme_palette(mode: object) -> dict[str, str]:
     return THEMES[normalize_theme(mode)]
 
 
-def load_theme(path: Path | str) -> str:
+def load_settings(path: Path | str) -> dict[str, object]:
+    """Read the UI settings file; a missing or damaged file gives no settings."""
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
-        return DEFAULT_THEME
-    return normalize_theme(payload.get("theme"))
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def update_settings(path: Path | str, **values: object) -> None:
+    """Change some UI settings and keep the others already in the file."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    settings = {**load_settings(destination), **values}
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(settings, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(destination)
+
+
+def load_theme(path: Path | str) -> str:
+    return normalize_theme(load_settings(path).get("theme"))
 
 
 def save_theme(path: Path | str, mode: object) -> None:
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps({"theme": normalize_theme(mode)}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    update_settings(path, theme=normalize_theme(mode))

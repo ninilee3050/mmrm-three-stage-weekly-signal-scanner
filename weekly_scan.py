@@ -8,7 +8,11 @@ import pandas as pd
 
 from data_provider import load_weekly_data
 from indicators import calculate_indicators
-from market_cap_provider import MarketCapCompany, fetch_us_top_market_cap
+from market_cap_provider import (
+    MarketCapCompany,
+    MarketCapLoadError,
+    fetch_us_top_market_cap_result,
+)
 from market_context import annotate_sp500_status, load_sp500_context
 from scanner import scan_signal_cycles
 from scenario_tracker import (
@@ -36,7 +40,18 @@ def main() -> int:
         scan_date = market_today()
         previous_active = load_active_scenarios()
         print("미국 시가총액 Top 100 목록과 활성 시나리오를 불러옵니다...")
-        top100_companies = fetch_us_top_market_cap(limit=TOP100_LIMIT)
+        try:
+            top100 = fetch_us_top_market_cap_result(limit=TOP100_LIMIT)
+            top100_companies = top100.companies
+            if top100.warning:
+                print(f"경고: {top100.warning}")
+        except MarketCapLoadError as exc:
+            # Keep following scenarios that are already active even when the
+            # ranking cannot be read; only new first signals are missed.
+            if previous_active.empty:
+                raise
+            top100_companies = []
+            print(f"경고: {exc} 활성 시나리오 종목만 스캔합니다.")
         companies = merge_scan_universe(top100_companies, previous_active)
         print("S&P500 주봉 데이터를 한 번 갱신합니다...")
         try:

@@ -175,14 +175,20 @@ def _format_benchmark_rates(display: pd.DataFrame) -> None:
 def dashboard_summary(
     events: pd.DataFrame,
     active_scenarios: pd.DataFrame,
-    scanned_this_session: bool,
+    has_scan_results: bool,
     last_scan_date: pd.Timestamp | None,
     today: pd.Timestamp,
+    last_scan_time: pd.Timestamp | None = None,
+    now: pd.Timestamp | None = None,
 ) -> dict[str, tuple[str, str, bool]]:
-    """Return (value, note, alert) for each dashboard card."""
+    """Return (value, note, alert) for each dashboard card.
+
+    ``last_scan_time`` (local clock) is preferred for the last-scan card when
+    known; otherwise the card falls back to ``last_scan_date``.
+    """
     summary: dict[str, tuple[str, str, bool]] = {}
 
-    if not scanned_this_session:
+    if not has_scan_results:
         summary["buy"] = ("스캔 전", "통합 스캔 후 표시됩니다", False)
     else:
         bought = pd.Series(False, index=events.index)
@@ -211,16 +217,22 @@ def dashboard_summary(
         False,
     )
 
-    if last_scan_date is None or pd.isna(last_scan_date):
+    if last_scan_time is not None and now is not None:
+        last = pd.Timestamp(last_scan_time)
+        days = max(0, (pd.Timestamp(now).normalize() - last.normalize()).days)
+        value = f"{last:%m/%d %H:%M}"
+    elif last_scan_date is None or pd.isna(last_scan_date):
         summary["last"] = ("기록 없음", "통합 스캔을 실행해 주세요", True)
+        return summary
     else:
         last = pd.Timestamp(last_scan_date).normalize()
         days = max(0, (pd.Timestamp(today).normalize() - last).days)
-        note = "오늘" if days == 0 else f"{days}일 전"
-        stale = days >= 7
-        if stale:
-            note += " · 스캔 필요"
-        summary["last"] = (f"{last:%m/%d}", note, stale)
+        value = f"{last:%m/%d}"
+    note = "오늘" if days == 0 else f"{days}일 전"
+    stale = days >= 7
+    if stale:
+        note += " · 스캔 필요"
+    summary["last"] = (value, note, stale)
     return summary
 
 
