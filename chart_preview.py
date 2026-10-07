@@ -1361,8 +1361,6 @@ class ChartPreviewWindow(tk.Toplevel):
         offset = min(count - 1, max(0, int(relative * count)))
         position = self.view_start + offset
         x = left + (offset + 0.5) / max(1, count) * (right - left)
-        panel = next((item for item in panels if item.top <= event.y <= item.bottom), panels[0])
-
         self.canvas.delete("crosshair")
         self.canvas.create_line(
             x,

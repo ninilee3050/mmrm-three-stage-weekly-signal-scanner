@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import re
 from dataclasses import asdict, dataclass, replace
@@ -10,9 +11,15 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-STOCK_ANALYSIS_BIGGEST_COMPANIES_URL = "https://stockanalysis.com/list/biggest-companies/"
-# The ranking shows 100 rows per page; later pages replace removed preferred shares.
-MAX_RANKING_PAGES = 5
+# US exchange lists, each sorted by market cap.  Together they hold every
+# US-listed stock, including ADRs such as TSM, that can reach the Top 100.
+# (StockAnalysis's "biggest companies" page became a world ranking with
+# foreign home-market tickers, so it is no longer used.)
+US_EXCHANGE_LIST_URLS = (
+    "https://stockanalysis.com/list/nasdaq-stocks/",
+    "https://stockanalysis.com/list/nyse-stocks/",
+)
+_MARKET_CAP_UNITS = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}
 TOP100_CACHE_PATH = Path("data") / "top100_cache.json"
 
 
@@ -70,20 +77,33 @@ def fetch_us_top_market_cap_result(
 
 def _fetch_live_ranking(limit: int) -> list[MarketCapCompany]:
     listings: list[MarketCapCompany] = []
-    companies: list[MarketCapCompany] = []
-    for page in range(1, MAX_RANKING_PAGES + 1):
-        page_listings = parse_stockanalysis_market_cap_table(
-            _download_stockanalysis_page(page)
-        )
-        if not page_listings:
-            break
-        listings.extend(page_listings)
-        companies = common_stock_listings(listings)
-        if len(companies) >= limit:
-            break
+    for url in US_EXCHANGE_LIST_URLS:
+        exchange_listings = parse_stockanalysis_market_cap_table(_download_list_page(url))
+        if not exchange_listings:
+            raise MarketCapLoadError(f"미국 시가총액 순위 목록을 찾지 못했습니다: {url}")
+        listings.extend(exchange_listings)
+    companies = common_stock_listings(rank_by_market_cap(listings))
     if not companies:
         raise MarketCapLoadError("미국 시가총액 순위 목록을 찾지 못했습니다.")
     return companies[:limit]
+
+
+def rank_by_market_cap(listings: list[MarketCapCompany]) -> list[MarketCapCompany]:
+    """Merge listings from several exchanges into one ranking by market cap."""
+    ordered = sorted(
+        listings,
+        key=lambda item: market_cap_value(item.market_cap),
+        reverse=True,
+    )
+    return [replace(item, rank=position) for position, item in enumerate(ordered, start=1)]
+
+
+def market_cap_value(text: object) -> float:
+    """"5.72T" -> 5.72e12; unreadable values sort last."""
+    match = re.match(r"^\$?([\d,]*\.?\d+)\s*([KMBT])?$", str(text).strip().upper())
+    if not match:
+        return float("-inf")
+    return float(match.group(1).replace(",", "")) * _MARKET_CAP_UNITS.get(match.group(2) or "", 1.0)
 
 
 def _save_ranking_cache(
@@ -126,22 +146,33 @@ def _load_ranking_cache(
 def common_stock_listings(companies: list[MarketCapCompany]) -> list[MarketCapCompany]:
     """Keep one common-stock listing per company and renumber the ranks.
 
-    The ranking also lists preferred shares (e.g. ``BAC.PRO``) and second
-    share classes (e.g. ``PBR.A``) with the whole company's market cap.
-    Preferred shares are dropped, and only a company's highest-ranked
-    remaining listing is kept, so the next common stocks fill the list.
+    The lists also carry preferred shares (e.g. ``BAC.PRO``) and second share
+    classes (e.g. ``BRK.A``/``BRK.B``) with the whole company's market cap.
+    Preferred shares are dropped.  Of a company's remaining listings the plain
+    ticker is kept, or else the later share class (``BRK.B`` over ``BRK.A``),
+    which is the class retail investors normally trade; it takes the
+    company's first position so the ranking order is unchanged.
     """
     kept: list[MarketCapCompany] = []
-    seen_companies: set[str] = set()
+    position_by_company: dict[str, int] = {}
     for company in sorted(companies, key=lambda item: item.rank):
         if _is_preferred_share(company.ticker):
             continue
         name = company.company.casefold()
-        if name in seen_companies:
+        if name in position_by_company:
+            index = position_by_company[name]
+            if _share_class_preference(company.ticker) > _share_class_preference(kept[index].ticker):
+                kept[index] = replace(company, rank=kept[index].rank)
             continue
-        seen_companies.add(name)
+        position_by_company[name] = len(kept)
         kept.append(replace(company, rank=len(kept) + 1))
     return kept
+
+
+def _share_class_preference(ticker: str) -> tuple[int, str]:
+    """Higher sorts first: a plain ticker, then the later share-class letter."""
+    base, separator, share_class = ticker.upper().partition(".")
+    return (1, "") if not separator else (0, share_class)
 
 
 def _is_preferred_share(ticker: str) -> bool:
@@ -161,9 +192,9 @@ def parse_stockanalysis_market_cap_table(html: str) -> list[MarketCapCompany]:
     return []
 
 
-def _download_stockanalysis_page(page: int = 1) -> str:
+def _download_list_page(url: str) -> str:
     request = Request(
-        STOCK_ANALYSIS_BIGGEST_COMPANIES_URL + (f"?page={page}" if page > 1 else ""),
+        url,
         headers={
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -180,6 +211,11 @@ def _download_stockanalysis_page(page: int = 1) -> str:
         raise MarketCapLoadError(f"StockAnalysis 접속 실패: HTTP {exc.code}") from exc
     except URLError as exc:
         raise MarketCapLoadError(f"StockAnalysis 접속 실패: {exc.reason}") from exc
+    except (OSError, http.client.HTTPException, ValueError) as exc:
+        # Dropped connections and timeouts while reading are not URLErrors.
+        raise MarketCapLoadError(
+            f"StockAnalysis 접속 실패: {type(exc).__name__}"
+        ) from exc
 
 
 def _companies_from_table(table: list[list[str]]) -> list[MarketCapCompany]:
@@ -189,7 +225,7 @@ def _companies_from_table(table: list[list[str]]) -> list[MarketCapCompany]:
     header_index = None
     header = []
     for index, row in enumerate(table):
-        normalized = [_normalize_cell(cell).lower() for cell in row]
+        normalized = [_normalize_header_cell(cell) for cell in row]
         if "market cap" in normalized and (
             {"symbol", "company name"} <= set(normalized)
             or {"rank", "company"} <= set(normalized)
@@ -274,6 +310,11 @@ def _find_header_index(header: list[str], choices: list[str]) -> int:
 
 def _normalize_cell(value: str) -> str:
     return " ".join(value.split()).strip()
+
+
+def _normalize_header_cell(value: str) -> str:
+    """Lower-case heading without a leading "#", so "# Rank" matches "rank"."""
+    return _normalize_cell(value).lower().lstrip("#").strip()
 
 
 def _normalize_ticker(value: str) -> str:

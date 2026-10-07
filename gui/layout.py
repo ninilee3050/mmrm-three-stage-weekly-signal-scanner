@@ -68,6 +68,7 @@ class LayoutMixin:
             820,
             screen_width,
             screen_height,
+            virtual_bounds=self._virtual_screen_bounds(),
         )
         self.geometry(f"{width}x{height}+{x}+{y}")
         self._history_panel_width = history_panel_width
@@ -514,6 +515,11 @@ class LayoutMixin:
     def _screen_size(self) -> tuple[int, int]:
         return self.winfo_screenwidth(), self.winfo_screenheight()
 
+    def _virtual_screen_bounds(self) -> tuple[int, int, int, int]:
+        """Left, top, right, bottom of all monitors together (Windows virtual screen)."""
+        left, top = self.winfo_vrootx(), self.winfo_vrooty()
+        return left, top, left + self.winfo_vrootwidth(), top + self.winfo_vrootheight()
+
     def _top100_toggle_text(self) -> str:
         return "Top 100 닫기" if self.top100_visible else "Top 100 열기"
 
@@ -526,14 +532,18 @@ class LayoutMixin:
         self.top100_toggle_button.configure(text=self._top100_toggle_text())
         self.after_idle(self._apply_default_pane_widths)
 
-    def _apply_initial_pane_widths(self) -> None:
+    def _apply_initial_pane_widths(self, attempts: int = 0) -> None:
         """Restore the maximized state and divider positions of the last session."""
-        if self._saved_window.get("zoomed"):
+        zoomed = bool(self._saved_window.get("zoomed"))
+        if zoomed and self.state() != "zoomed":
             self.state("zoomed")
         self.update_idletasks()
         total = self.main_panes.winfo_width()
-        if total <= 1:
-            self.after(50, self._apply_initial_pane_widths)
+        # Maximizing resizes the window a moment later; wait for the real width
+        # so the saved divider positions are scaled against it, not the old one.
+        still_resizing = zoomed and self.winfo_width() < self.winfo_screenwidth() - 100
+        if (total <= 1 or still_resizing) and attempts < 20:
+            self.after(50, lambda: self._apply_initial_pane_widths(attempts + 1))
             return
         positions = scaled_sash_positions(
             self._saved_window.get("sashes"),

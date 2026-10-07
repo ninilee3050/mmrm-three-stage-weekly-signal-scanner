@@ -10,7 +10,12 @@ import pandas as pd
 from chart_strength import ChartStrengthReferenceError, load_chart_strength_reference
 from benchmark_analytics import add_benchmark_returns
 from csv_io import describe_save_error
-from data_provider import DataLoadError, load_weekly_data, normalize_ticker
+from data_provider import (
+    DataLoadError,
+    is_weekend_traded,
+    load_weekly_data,
+    normalize_ticker,
+)
 from indicators import calculate_indicators
 from market_cap_provider import MarketCapCompany
 from market_context import load_sp500_context
@@ -162,7 +167,10 @@ class SearchMixin:
                 force_refresh=True,
             )
             calculated = calculate_indicators(raw_data)
-            signal_cycles, full_table = scan_signal_cycles(calculated)
+            signal_cycles, full_table = scan_signal_cycles(
+                calculated,
+                weekend_traded=is_weekend_traded(ticker),
+            )
             try:
                 signal_path, _ = save_signal_outputs(ticker, signal_cycles, full_table)
                 save_message = f"저장: {signal_path}"
@@ -197,6 +205,7 @@ class SearchMixin:
                     signal_cycles,
                     full_table,
                     sp500_data,
+                    weekend_traded=is_weekend_traded(ticker),
                 )
             }
             performance_by_horizon = {

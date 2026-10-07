@@ -110,12 +110,14 @@ def scan_buy_points(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 def scan_signal_cycles(
     data: pd.DataFrame,
     now: pd.Timestamp | None = None,
+    weekend_traded: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     full = add_signal_columns(data)
     # A forward return that lands on the unfinished current week is not final.
     in_progress_position = (
         len(full) - 1
-        if len(full) and weekly_bar_in_progress(full.index[-1], now=now)
+        if len(full)
+        and weekly_bar_in_progress(full.index[-1], now=now, weekend_traded=weekend_traded)
         else None
     )
     full["original_mmrm_point"] = False

@@ -7,9 +7,10 @@ them the scan runs as before and nothing is sent.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pandas as pd
@@ -49,12 +50,17 @@ def build_scan_message(
     if buys.empty:
         lines.append("3차 매수 신호 없음")
     else:
-        priority = int((buys.get("검토등급") == PRIORITY_GRADE).sum())
+        grades = (
+            buys["검토등급"]
+            if "검토등급" in buys.columns
+            else pd.Series("", index=buys.index, dtype=object)
+        )
+        priority = int((grades == PRIORITY_GRADE).sum())
         suffix = f" (우선검토 {priority}건)" if priority else ""
         lines.append(f"🔴 3차 매수 신호 {len(buys)}건{suffix}")
         # Priority-review signals first, then the stronger chart score.
         ordered = buys.assign(
-            _priority=(buys.get("검토등급") == PRIORITY_GRADE),
+            _priority=(grades == PRIORITY_GRADE),
             _score=pd.to_numeric(
                 buys.get("차트 강도", pd.Series(dtype=object))
                 .astype(str)
@@ -141,7 +147,8 @@ def send_telegram_message(text: str, token: str, chat_id: str) -> None:
         raise NotificationError(
             f"텔레그램 전송 실패: HTTP {exc.code} ({_telegram_error_hint(exc.code)})"
         ) from None
-    except (URLError, TimeoutError, ValueError) as exc:
+    except (OSError, http.client.HTTPException, ValueError) as exc:
+        # URLError, timeouts and dropped connections all land here.
         raise NotificationError(
             f"텔레그램 전송 실패: {type(exc).__name__}"
         ) from None
