@@ -399,11 +399,14 @@ def restored_window_placement(
     default_height: int,
     screen_width: int,
     screen_height: int,
+    virtual_bounds: tuple[int, int, int, int] | None = None,
 ) -> tuple[int, int, int, int]:
     """Return (width, height, x, y) from saved window state, kept on screen.
 
     Without usable saved state the default size is centered as on first start.
-    A size or position saved on a larger monitor is pulled back onto this one.
+    The size is limited to the primary screen; the position is kept inside
+    ``virtual_bounds`` (left, top, right, bottom of all monitors together) so
+    a window left on a second monitor reopens there.
     """
     width, height, x, y = default_width, default_height, None, None
     if isinstance(saved, dict):
@@ -420,8 +423,9 @@ def restored_window_placement(
             max(0, (screen_width - width) // 2),
             max(0, (screen_height - height) // 3),
         )
-    x = min(max(0, x), max(0, screen_width - width))
-    y = min(max(0, y), max(0, screen_height - height))
+    left, top, right, bottom = virtual_bounds or (0, 0, screen_width, screen_height)
+    x = min(max(left, x), max(left, right - width))
+    y = min(max(top, y), max(top, bottom - height))
     return width, height, x, y
 
 

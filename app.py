@@ -110,6 +110,7 @@ class BuyPointApp(
         self.unsaved_scan_state: tuple[object, ...] | None = None
         # Local time of the latest scan, restored from the previous session.
         self.last_scan_time: pd.Timestamp | None = None
+        self.latest_scan_failures = pd.DataFrame(columns=SCAN_FAILURE_COLUMNS)
         restored_scan = load_last_scan()
         if restored_scan is not None:
             (
@@ -118,7 +119,6 @@ class BuyPointApp(
                 self.latest_scan_failures,
                 self.last_scan_time,
             ) = restored_scan
-        self.latest_scan_failures = pd.DataFrame(columns=SCAN_FAILURE_COLUMNS)
         self.latest_scan_date: pd.Timestamp | None = None
         self.latest_classifications = pd.DataFrame()
         self.latest_cycles_by_ticker: dict[str, pd.DataFrame] = {}

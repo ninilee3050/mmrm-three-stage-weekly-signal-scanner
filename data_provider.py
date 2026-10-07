@@ -16,6 +16,8 @@ DATA_DIR = Path("data")
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
 US_MARKET_TIMEZONE = "America/New_York"
+# Yahoo symbols for assets that also trade on weekends, e.g. BTC-USD.
+WEEKEND_TRADED_SUFFIX = "-USD"
 
 
 class DataLoadError(RuntimeError):
@@ -69,7 +71,7 @@ def load_weekly_data(
     if data.empty:
         raise DataLoadError(f"{ticker} 데이터가 비어 있습니다. 티커를 다시 확인해 주세요.")
 
-    data.to_csv(csv_path, index_label="Date", encoding="utf-8-sig")
+    _write_csv_atomic(data, csv_path)
     return data
 
 
@@ -126,7 +128,7 @@ def load_weekly_data_resilient(
         )
         if downloaded.empty:
             raise DataLoadError(f"{ticker} 데이터가 비어 있습니다.")
-        downloaded.to_csv(csv_path, index_label="Date", encoding="utf-8-sig")
+        _write_csv_atomic(downloaded, csv_path)
         return WeeklyDataLoadResult(downloaded, "download")
     except Exception as exc:
         if cached is None:
@@ -353,22 +355,41 @@ def _resample_daily_to_weekly(
     return _drop_incomplete_current_week(weekly)
 
 
+def _write_csv_atomic(data: pd.DataFrame, path: Path) -> None:
+    """Write the cache to a temporary file first so a reader never sees a partial file."""
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    data.to_csv(temporary, index_label="Date", encoding="utf-8-sig")
+    temporary.replace(path)
+
+
+def is_weekend_traded(ticker: object) -> bool:
+    """True for assets whose week runs through Sunday, such as crypto pairs."""
+    return str(ticker).strip().upper().endswith(WEEKEND_TRADED_SUFFIX)
+
+
 def weekly_bar_in_progress(
     week_start: pd.Timestamp | str,
     now: pd.Timestamp | None = None,
+    weekend_traded: bool = False,
 ) -> bool:
-    """Return True while the US trading week labelled ``week_start`` is still open.
+    """Return True while the week labelled ``week_start`` is still open.
 
-    The week closes at Friday 16:00 New York time.  ``now`` defaults to the
-    current time; a naive ``now`` is read as New York time.
+    A stock week closes at Friday 16:00 New York time.  A weekend-traded asset
+    (crypto) keeps trading until its Sunday UTC daily bar ends, so its week
+    closes at Monday 00:00 UTC.  ``now`` defaults to the current time; a naive
+    ``now`` is read as New York time.
     """
     if now is None:
         now = pd.Timestamp.now(tz=US_MARKET_TIMEZONE)
     elif now.tzinfo is None:
         now = now.tz_localize(US_MARKET_TIMEZONE)
-    week_close = (
-        pd.Timestamp(week_start).normalize() + pd.Timedelta(days=4, hours=16)
-    ).tz_localize(US_MARKET_TIMEZONE)
+    monday = pd.Timestamp(week_start).normalize()
+    if weekend_traded:
+        week_close = (monday + pd.Timedelta(days=7)).tz_localize("UTC")
+    else:
+        week_close = (monday + pd.Timedelta(days=4, hours=16)).tz_localize(
+            US_MARKET_TIMEZONE
+        )
     return bool(now < week_close)
 
 

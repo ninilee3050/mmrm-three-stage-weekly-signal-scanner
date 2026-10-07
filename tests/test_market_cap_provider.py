@@ -110,34 +110,64 @@ def test_parse_current_layout_with_combined_company_cell() -> None:
     ]
 
 
-def test_ranking_uses_next_page_to_replace_preferred_shares(monkeypatch) -> None:
+def exchange_list_html(rows: list[tuple[str, str, str]]) -> str:
+    body = "".join(
+        f"<tr><td>{index}</td><td>{ticker}</td><td>{name}</td><td>{cap}</td>"
+        f"<td>$1.00</td><td>0.00%</td><td>1B</td></tr>"
+        for index, (ticker, name, cap) in enumerate(rows, start=1)
+    )
+    return (
+        "<table><thead><tr><th>No.</th><th>Symbol</th><th>Company Name</th>"
+        "<th>Market Cap</th><th>Stock Price</th><th>% Change</th><th>Revenue</th>"
+        f"</tr></thead><tbody>{body}</tbody></table>"
+    )
+
+
+NASDAQ_HTML = exchange_list_html(
+    [("NVDA", "NVIDIA Corporation", "5.72T"), ("AAPL", "Apple Inc.", "4.86T"),
+     ("COST", "Costco Wholesale Corporation", "409.37B")]
+)
+NYSE_HTML = exchange_list_html(
+    [("TSM", "Taiwan Semiconductor", "2.07T"), ("BRK.B", "Berkshire Hathaway Inc.", "1.08T"),
+     ("BAC.PRO", "Bank of America Corporation", "396.49B"),
+     ("BAC", "Bank of America Corporation", "390.06B")]
+)
+
+
+def test_market_cap_text_is_ordered_by_value() -> None:
+    from market_cap_provider import market_cap_value
+
+    assert market_cap_value("5.72T") == 5.72e12
+    assert market_cap_value("$396.49B") == 396.49e9
+    assert market_cap_value("1,234") == 1234.0
+    assert market_cap_value("n/a") == float("-inf")
+
+
+def test_ranking_merges_the_nasdaq_and_nyse_lists_by_market_cap(monkeypatch) -> None:
     import market_cap_provider as provider
 
-    page_two = CURRENT_LAYOUT_HTML.replace("/stocks/nvda/", "/stocks/aapl/").replace(
-        "NVIDIA Corporation", "Apple Inc."
-    ).replace("NVDA", "AAPL").replace("<td>1</td>", "<td>101</td>")
-    pages = {1: CURRENT_LAYOUT_HTML, 2: page_two, 3: ""}
     requested = []
 
-    def fake_download(page: int = 1) -> str:
-        requested.append(page)
-        return pages[page]
+    def fake_download(url: str) -> str:
+        requested.append(url)
+        return NASDAQ_HTML if "nasdaq" in url else NYSE_HTML
 
-    monkeypatch.setattr(provider, "_download_stockanalysis_page", fake_download)
+    monkeypatch.setattr(provider, "_download_list_page", fake_download)
 
-    result = provider.fetch_us_top_market_cap_result(limit=4, cache_path=None)
+    result = provider.fetch_us_top_market_cap_result(limit=5, cache_path=None)
 
-    assert requested == [1, 2]
+    assert requested == list(provider.US_EXCHANGE_LIST_URLS)
     assert [(c.rank, c.ticker) for c in result.companies] == [
         (1, "NVDA"),
-        (2, "BRK.B"),
-        (3, "T"),
-        (4, "AAPL"),
+        (2, "AAPL"),
+        (3, "TSM"),
+        (4, "BRK.B"),
+        (5, "COST"),  # BAC.PRO (preferred) is dropped; BAC (390B) comes 6th
     ]
     assert result.warning == ""
 
 
-def test_saved_ranking_is_used_when_the_live_page_cannot_be_read(
+def test_saved_ranking_is_used_when_the_live_pages_cannot_be_read(
     monkeypatch, tmp_path
 ) -> None:
     import pytest
@@ -146,18 +176,42 @@ def test_saved_ranking_is_used_when_the_live_page_cannot_be_read(
 
     cache = tmp_path / "top100_cache.json"
     monkeypatch.setattr(
-        provider, "_download_stockanalysis_page", lambda page=1: CURRENT_LAYOUT_HTML
+        provider,
+        "_download_list_page",
+        lambda url: NASDAQ_HTML if "nasdaq" in url else NYSE_HTML,
     )
     live = provider.fetch_us_top_market_cap_result(limit=3, cache_path=cache)
     assert live.warning == "" and cache.exists()
 
     # The site changes its layout: nothing can be parsed any more.
-    monkeypatch.setattr(
-        provider, "_download_stockanalysis_page", lambda page=1: "<html></html>"
-    )
+    monkeypatch.setattr(provider, "_download_list_page", lambda url: "<html></html>")
     fallback = provider.fetch_us_top_market_cap_result(limit=3, cache_path=cache)
 
-    assert [c.ticker for c in fallback.companies] == ["NVDA", "BRK.B", "T"]
+    assert [c.ticker for c in fallback.companies] == ["NVDA", "AAPL", "TSM"]
     assert "저장한 목록을 사용합니다" in fallback.warning
     with pytest.raises(provider.MarketCapLoadError):
         provider.fetch_us_top_market_cap_result(limit=3, cache_path=tmp_path / "none.json")
+
+
+def test_heading_with_a_hash_prefix_is_still_recognised() -> None:
+    html = CURRENT_LAYOUT_HTML.replace("<th>Rank</th>", "<th># Rank</th>")
+
+    companies = parse_stockanalysis_market_cap_table(html)
+
+    assert [c.ticker for c in companies] == ["NVDA", "BRK.B", "GS.PRD", "T"]
+
+
+def test_the_commonly_traded_share_class_is_kept_for_dual_class_companies() -> None:
+    from market_cap_provider import MarketCapCompany, common_stock_listings
+
+    kept = common_stock_listings(
+        [
+            MarketCapCompany(1, "BRK.A", "Berkshire Hathaway Inc.", "1.08T"),
+            MarketCapCompany(2, "BRK.B", "Berkshire Hathaway Inc.", "1.08T"),
+            MarketCapCompany(3, "HEI.A", "HEICO Corporation", "20B"),
+            MarketCapCompany(4, "HEI", "HEICO Corporation", "20B"),
+            MarketCapCompany(5, "GOOGL", "Alphabet Inc.", "4T"),
+        ]
+    )
+
+    assert [(c.rank, c.ticker) for c in kept] == [(1, "BRK.B"), (2, "HEI"), (3, "GOOGL")]

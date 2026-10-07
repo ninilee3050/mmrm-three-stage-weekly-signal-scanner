@@ -3,7 +3,12 @@ name: MMRM Three-Stage Weekly Scenario Scan
 on:
   workflow_dispatch:
   schedule:
+    # Friday after the US close: the real weekly scan.
     - cron: "30 16 * * 5"
+      timezone: "America/New_York"
+    # Tuesday: only restores and re-saves the tracking state so the Actions
+    # cache (dropped after 7 unused days) is never older than 4 days.
+    - cron: "30 16 * * 2"
       timezone: "America/New_York"
 
 permissions:
@@ -27,28 +32,37 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Restore active scenario state
+        id: restore
         uses: actions/cache/restore@v4
         with:
-          path: outputs/mmrm_active_scenarios.csv
+          # The tracking state and the last good Top 100 list (fallback when
+          # the ranking site cannot be read) travel together between runs.
+          path: |
+            outputs/mmrm_active_scenarios.csv
+            data/top100_cache.json
           key: mmrm-active-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             mmrm-active-state-
 
       - name: Run weekly scanner
+        if: github.event.schedule != '30 16 * * 2'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MMRM_STATE_RESTORED: ${{ steps.restore.outputs.cache-matched-key != '' }}
         run: python weekly_scan.py
 
       - name: Save active scenario state
         if: always() && hashFiles('outputs/mmrm_active_scenarios.csv') != ''
         uses: actions/cache/save@v4
         with:
-          path: outputs/mmrm_active_scenarios.csv
+          path: |
+            outputs/mmrm_active_scenarios.csv
+            data/top100_cache.json
           key: mmrm-active-state-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload scan results
-        if: always()
+        if: always() && github.event.schedule != '30 16 * * 2'
         uses: actions/upload-artifact@v4
         with:
           name: mmrm-three-stage-weekly-scan-${{ github.run_number }}

@@ -121,8 +121,8 @@ def merge_scan_universe(
         companies_by_ticker[ticker] = MarketCapCompany(
             rank=_rank_or_default(row.get("순위")),
             ticker=ticker,
-            company=str(row.get("회사명", "")).strip(),
-            market_cap=str(row.get("시가총액", "")).strip(),
+            company=_text(row.get("회사명")),
+            market_cap=_text(row.get("시가총액")),
         )
 
     return list(companies_by_ticker.values())
@@ -395,6 +395,13 @@ def _as_timestamp(value: object) -> pd.Timestamp | None:
 def _week_start(value: pd.Timestamp | str) -> pd.Timestamp:
     date = pd.Timestamp(value).normalize()
     return date - pd.Timedelta(days=date.weekday())
+
+
+def _text(value: object) -> str:
+    """A CSV cell as text; empty cells read back as NaN become ""."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    return str(value).strip()
 
 
 def _rank_or_default(value: object) -> int:

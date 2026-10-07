@@ -18,7 +18,7 @@ from chart_strength import (
 )
 from benchmark_analytics import add_benchmark_returns
 from csv_io import describe_save_error
-from data_provider import load_weekly_data
+from data_provider import is_weekend_traded, load_weekly_data
 from indicators import calculate_indicators
 from market_cap_provider import (
     MarketCapCompany,
@@ -142,9 +142,7 @@ class ScanMixin:
         self.validation_tree.delete(*self.validation_tree.get_children())
         self.ranking_tree.delete(*self.ranking_tree.get_children())
         self.failure_tree.delete(*self.failure_tree.get_children())
-        self.latest_scan_events = pd.DataFrame(columns=SCAN_EVENT_COLUMNS)
-        self.latest_closed_results = pd.DataFrame(columns=CLOSED_RESULT_COLUMNS)
-        self.latest_scan_failures = pd.DataFrame(columns=SCAN_FAILURE_COLUMNS)
+        # The previous scan's tables are kept so a failed scan can show them again.
         self.latest_scan_date = None
         self.latest_classifications = pd.DataFrame()
         self.latest_cycles_by_ticker = {}
@@ -247,6 +245,7 @@ class ScanMixin:
                     cycles,
                     full_tables_by_ticker[ticker],
                     sp500_data,
+                    weekend_traded=is_weekend_traded(ticker),
                 )
                 for ticker, cycles in cycles_by_ticker.items()
             }
@@ -459,7 +458,10 @@ class ScanMixin:
                 force_refresh=True,
             )
             calculated = calculate_indicators(raw_data)
-            cycles, full_table = scan_signal_cycles(calculated)
+            cycles, full_table = scan_signal_cycles(
+                calculated,
+                weekend_traded=is_weekend_traded(company.ticker),
+            )
             summary = summarize_ticker_cycles(
                 company,
                 cycles,
@@ -649,6 +651,8 @@ class ScanMixin:
         else:
             message = f"Top 100 스캔 중 오류가 발생했습니다: {exc}"
 
+        if self.last_scan_time is not None:
+            self._show_restored_scan()
         self.scan_status_var.set(message)
         self.scan_status_label.configure(style="ScanStatus.TLabel")
         self.scan_button.configure(state="normal")

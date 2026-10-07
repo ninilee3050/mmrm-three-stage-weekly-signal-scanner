@@ -38,6 +38,7 @@ def add_benchmark_returns(
     full_table: pd.DataFrame,
     sp500: pd.DataFrame | None,
     now: pd.Timestamp | None = None,
+    weekend_traded: bool = False,
 ) -> pd.DataFrame:
     """Add S&P 500 and nearby-week baseline returns to confirmed buy cycles.
 
@@ -59,7 +60,7 @@ def add_benchmark_returns(
         else pd.Series(dtype=float)
     )
     stock_forward = {
-        horizon: _forward_returns(stock_close, weeks, now)
+        horizon: _forward_returns(stock_close, weeks, now, weekend_traded)
         for horizon, weeks in HORIZON_WEEKS.items()
     }
     sp500_forward = {
@@ -152,12 +153,13 @@ def _forward_returns(
     close: pd.Series,
     weeks: int,
     now: pd.Timestamp | None,
+    weekend_traded: bool = False,
 ) -> pd.Series:
     """Percent return from each week's close to the close ``weeks`` later."""
     if close.empty:
         return close
     forward = (close.shift(-weeks) / close - 1) * 100
-    if weekly_bar_in_progress(close.index[-1], now=now):
+    if weekly_bar_in_progress(close.index[-1], now=now, weekend_traded=weekend_traded):
         # The last bar is not final yet, so returns ending on it are not either.
         last_position = len(close) - 1
         forward.iloc[max(0, last_position - weeks)] = np.nan

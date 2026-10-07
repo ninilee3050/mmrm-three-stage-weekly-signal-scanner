@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from data_provider import is_weekend_traded
 from market_cap_provider import MarketCapCompany
 
 
@@ -23,8 +24,6 @@ WATCHLIST_FILE_HEADER = (
     "# 관심종목: 통합 스캔과 금요일 자동 스캔에 Top 100과 함께 포함됩니다.\n"
     "# 한 줄에 하나씩 '티커, 이름' 형식으로 적습니다. 이름은 생략할 수 있습니다.\n"
 )
-# Yahoo symbols for assets that also trade on weekends, e.g. BTC-USD.
-WEEKEND_TRADED_SUFFIX = "-USD"
 
 
 @dataclass(frozen=True)
@@ -125,11 +124,6 @@ def watchlist_companies(
             )
         )
     return companies
-
-
-def is_weekend_traded(ticker: object) -> bool:
-    """True for assets whose week runs through Sunday, such as crypto pairs."""
-    return str(ticker).strip().upper().endswith(WEEKEND_TRADED_SUFFIX)
 
 
 def clear_chart_strength_for_weekend_assets(events: pd.DataFrame) -> pd.DataFrame:

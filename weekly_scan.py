@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -11,7 +12,7 @@ from chart_strength import (
     annotate_scan_events,
     load_chart_strength_reference,
 )
-from data_provider import load_weekly_data, weekly_bar_in_progress
+from data_provider import is_weekend_traded, load_weekly_data, weekly_bar_in_progress
 from indicators import calculate_indicators
 from market_cap_provider import (
     MarketCapCompany,
@@ -50,12 +51,26 @@ from watchlist import (
 OUTPUT_DIR = Path("outputs")
 TOP100_LIMIT = 100
 RETRY_DELAY_SECONDS = 2
+# Set by the GitHub workflow: "true" when the saved state was restored.
+STATE_RESTORED_ENV = "MMRM_STATE_RESTORED"
+STATE_LOST_WARNING = (
+    "이전 활성 시나리오 상태를 찾지 못해 처음부터 다시 추적합니다. "
+    "지난 스캔 이후의 2차·3차 신호 중 일부가 이번 알림에 빠졌을 수 있습니다."
+)
 SCAN_FAILURE_COLUMNS = ["순위", "티커", "회사명", "시가총액", "오류"]
 
 
 def main() -> int:
     scan_date = market_today()
+    week_start = scan_date - pd.Timedelta(days=scan_date.weekday())
+    # Before Friday's close this week's bar can still change, so the run only
+    # reports; it never advances the saved tracking state.
+    provisional = weekly_bar_in_progress(week_start)
     warnings: list[str] = []
+    restore_warning = state_restore_warning()
+    if restore_warning:
+        print(f"경고: {restore_warning}")
+        warnings.append(restore_warning)
     try:
         previous_active = load_active_scenarios()
         print("미국 시가총액 Top 100 목록과 활성 시나리오를 불러옵니다...")
@@ -167,7 +182,6 @@ def main() -> int:
             columns=SCAN_FAILURE_COLUMNS,
         )
 
-        save_active_scenarios(active_df)
         saved_paths = save_scan_outputs(
             events_df,
             active_df,
@@ -175,6 +189,10 @@ def main() -> int:
             failures_df,
             scan_date,
         )
+        if provisional:
+            print("장 마감 전 실행: 활성 시나리오 상태는 저장하지 않습니다.")
+        else:
+            save_active_scenarios(active_df)
     except Exception as exc:
         print(f"스캔 실패: {exc}", file=sys.stderr)
         _send_notification(build_failure_message(exc, scan_date))
@@ -205,7 +223,6 @@ def main() -> int:
         print(f"저장: {path}")
     if sp500_warning:
         warnings.append(sp500_warning)
-    week_start = scan_date - pd.Timedelta(days=scan_date.weekday())
     _send_notification(
         build_scan_message(
             events_df,
@@ -213,10 +230,17 @@ def main() -> int:
             len(failures_df),
             scan_date,
             warnings,
-            provisional=weekly_bar_in_progress(week_start),
+            provisional=provisional,
         )
     )
     return 0
+
+
+def state_restore_warning() -> str:
+    """Warning text when the workflow reports that no saved state was restored."""
+    if os.environ.get(STATE_RESTORED_ENV, "").strip().lower() == "false":
+        return STATE_LOST_WARNING
+    return ""
 
 
 def _send_notification(text: str) -> None:
@@ -261,7 +285,10 @@ def scan_companies(
                 force_refresh=True,
             )
             calculated = calculate_indicators(raw_data)
-            cycles, full_table = scan_signal_cycles(calculated)
+            cycles, full_table = scan_signal_cycles(
+                calculated,
+                weekend_traded=is_weekend_traded(company.ticker),
+            )
             if full_tables_by_ticker is not None:
                 full_tables_by_ticker[company.ticker.upper()] = full_table
             ticker_events, active_row, ticker_closed = summarize_ticker_cycles(
