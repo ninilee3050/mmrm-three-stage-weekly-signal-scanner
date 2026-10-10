@@ -10,18 +10,41 @@ from __future__ import annotations
 import http.client
 import json
 import os
+from html import escape
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pandas as pd
 
-from watchlist import is_weekend_traded, market_cap_rank_text
+from watchlist import WATCHLIST_LABEL, is_weekend_traded, market_cap_rank_text
 
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID_ENV = "TELEGRAM_CHAT_ID"
 MAX_LISTED_TICKERS = 15
+ITEM_MARKER = "▸"
+MAX_COMPANY_NAME_LENGTH = 16
+COMPANY_SUFFIXES = (
+    " & Co.",
+    " Group",
+    " Incorporated",
+    " Corporation",
+    " Company",
+    " Limited",
+    " Holdings",
+    " Holding",
+    " Inc.",
+    " Inc",
+    " Corp.",
+    " Corp",
+    " Co.",
+    " Ltd.",
+    " Ltd",
+    " plc",
+    " N.V.",
+    " S.A.",
+)
 PRIORITY_GRADE = "우선검토"
 
 
@@ -38,20 +61,24 @@ def build_scan_message(
     provisional: bool = False,
     data_basis: str = "",
 ) -> str:
-    """Summarize one scan as a short Telegram message, buy signals first.
+    """Summarize one scan as a short Telegram message (HTML formatting).
+
+    Each stage has a heading followed by one line per stock:
+    "▸ <rank> <ticker> (company) — score".  The rank is monospace and the
+    ticker bold so rank, ticker, company and score read as separate items,
+    and lines stay short enough not to wrap on a phone.
 
     ``provisional`` marks a scan run before the week's Friday close, whose
     current-week signals can still change; ``data_basis`` then says which
     session the latest prices come from.
     """
-    lines = [f"📈 MMRM 주간 스캔 ({pd.Timestamp(scan_date):%Y-%m-%d})", ""]
+    lines = [f"📈 MMRM 주간 스캔 · {pd.Timestamp(scan_date):%m/%d}"]
     if provisional:
-        lines.append("※ 이번 주 장 마감 전의 잠정 결과입니다.")
-        if data_basis:
-            lines.append(f"※ {data_basis}")
-        lines.append("")
+        basis = escape(data_basis) if data_basis else "이번 주 장 마감 전"
+        lines.append(f"※ 잠정 결과 · {basis}")
 
     buys = _stage_rows(events, "3차 신호", "매수 성공")
+    lines.append("")
     if buys.empty:
         lines.append("3차 매수 신호 없음")
     else:
@@ -60,23 +87,18 @@ def build_scan_message(
             if "검토등급" in buys.columns
             else pd.Series("", index=buys.index, dtype=object)
         )
-        priority = int((grades == PRIORITY_GRADE).sum())
-        suffix = f" (우선검토 {priority}건)" if priority else ""
-        lines.append(f"🔴 3차 매수 신호 {len(buys)}건{suffix}")
         # Priority-review signals first, then the stronger chart score.
         ordered = buys.assign(
             _priority=(grades == PRIORITY_GRADE),
             _score=pd.to_numeric(
-                buys.get("차트 강도", pd.Series(dtype=object))
+                buys.get("차트 강도", pd.Series("", index=buys.index, dtype=object))
                 .astype(str)
                 .str.replace("점", "", regex=False),
                 errors="coerce",
             ),
         ).sort_values(["_priority", "_score"], ascending=False, na_position="last")
-        for _, row in ordered.head(MAX_LISTED_TICKERS).iterrows():
-            lines.append(f"• {_buy_line(row)}")
-        if len(buys) > MAX_LISTED_TICKERS:
-            lines.append(f"• 외 {len(buys) - MAX_LISTED_TICKERS}건")
+        lines.append(f"🔴 3차 매수 신호 {len(buys)}건")
+        lines += _stock_lines(ordered, with_score=True)
 
     other_stages = (
         ("🟠 2차 신호", _stage_rows(events, "2차 신호")),
@@ -84,13 +106,9 @@ def build_scan_message(
         ("⚪ 2차 폐기", _stage_rows(events, "2차 폐기")),
         ("⚪ 3차 실패", _stage_rows(events, "3차 신호", "실패")),
     )
-    stage_lines = [
-        f"{label} {len(rows)}건: {_ticker_list(rows)}"
-        for label, rows in other_stages
-        if not rows.empty
-    ]
-    if stage_lines:
-        lines += ["", *stage_lines]
+    for label, rows in other_stages:
+        if not rows.empty:
+            lines += ["", f"{label} {len(rows)}건", *_stock_lines(rows, with_score=False)]
 
     states = (
         active_scenarios["현재상태"]
@@ -111,19 +129,17 @@ def build_scan_message(
         )
         if weekend_tickers:
             # Crypto keeps trading after the Friday scan, so its week is not over.
-            lines.append(
-                f"※ {', '.join(weekend_tickers)}: 주말 거래 반영 전 결과입니다."
-            )
+            lines.append(f"※ {escape(', '.join(weekend_tickers))}: 주말 거래 반영 전")
     for warning in warnings or []:
         if warning:
-            lines.append(f"⚠️ {warning}")
+            lines.append(f"⚠️ {escape(warning)}")
     return "\n".join(lines)
 
 
 def build_failure_message(error: object, scan_date: pd.Timestamp) -> str:
     return (
-        f"⚠️ MMRM 주간 스캔 실패 ({pd.Timestamp(scan_date):%Y-%m-%d})\n\n"
-        f"{error}\n\nGitHub Actions 실행 기록을 확인해 주세요."
+        f"⚠️ MMRM 주간 스캔 실패 · {pd.Timestamp(scan_date):%m/%d}\n\n"
+        f"{escape(str(error))}\n\nGitHub Actions 실행 기록을 확인해 주세요."
     )
 
 
@@ -140,7 +156,10 @@ def notify_from_environment(text: str) -> bool:
 def send_telegram_message(text: str, token: str, chat_id: str) -> None:
     request = Request(
         TELEGRAM_API_URL.format(token=token),
-        data=json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8"),
+        # Messages use Telegram's HTML formatting (<b>, <code>).
+        data=json.dumps(
+            {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        ).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -183,38 +202,70 @@ def _stage_rows(
     return events[mask]
 
 
-def _buy_line(row: pd.Series) -> str:
-    text = f"{row.get('티커', '')} {row.get('회사명', '')}".strip()
-    rank = _ranked_text(row.get("순위"))
+def _stock_lines(rows: pd.DataFrame, with_score: bool) -> list[str]:
+    lines = [
+        f"{ITEM_MARKER} {_stock_line(row, with_score)}"
+        for _, row in rows.head(MAX_LISTED_TICKERS).iterrows()
+    ]
+    if len(rows) > MAX_LISTED_TICKERS:
+        lines.append(f"{ITEM_MARKER} 외 {len(rows) - MAX_LISTED_TICKERS}건")
+    return lines
+
+
+def _stock_line(row: pd.Series, with_score: bool) -> str:
+    """"<code>59</code> <b>SAP</b> (SAP SE) — 79점 · 우선검토" for one stock."""
+    parts = []
+    rank = _rank_label(row.get("순위"))
     if rank:
-        text += f" (시총 {rank})"
-    grade = str(row.get("검토등급", "") or "").strip()
-    score = str(row.get("차트 강도", "") or "").strip()
-    detail = " ".join(
-        part for part in (grade, score) if part and part not in {"nan", "해당 없음"}
-    )
-    if detail:
-        text += f" — {detail}"
+        parts.append(f"<code>{escape(rank)}</code>")
+    parts.append(f"<b>{escape(str(row.get('티커', '')))}</b>")
+    company = short_company_name(row.get("회사명"))
+    if company:
+        parts.append(f"({escape(company)})")
+    text = " ".join(parts)
+
+    if with_score:
+        details = []
+        score = row.get("_score")
+        if score is not None and not pd.isna(score):
+            details.append(f"{int(float(score) + 0.5)}점")  # 30.5 -> 31
+        if row.get("_priority"):
+            details.append(PRIORITY_GRADE)
+        if details:
+            text += " — " + " · ".join(details)
     if row.get("신호구분") == "미확인 기간":
         signal_date = pd.to_datetime(row.get("신호일"), errors="coerce")
         if not pd.isna(signal_date):
-            text += f" ({signal_date:%m/%d} 주 신호)"
+            text += f" ({signal_date:%m/%d} 주)"
     return text
 
 
-def _ranked_text(rank: object) -> str:
-    """"8위" for a ranked company; "" for watchlist or out-of-ranking tickers."""
+def _rank_label(rank: object) -> str:
+    """Bare rank number, or "관심" / "순위 밖" for unranked tickers."""
     text = market_cap_rank_text(rank)
-    return text if text.endswith("위") else ""
+    return text[:-1] if text.endswith("위") else text
 
 
-def _ticker_list(rows: pd.DataFrame) -> str:
-    ranks = rows["순위"].tolist() if "순위" in rows.columns else [None] * len(rows)
-    tickers = [
-        f"{ticker}({_ranked_text(rank)})" if _ranked_text(rank) else str(ticker)
-        for ticker, rank in zip(rows["티커"].tolist(), ranks)
-    ]
-    listed = ", ".join(tickers[:MAX_LISTED_TICKERS])
-    if len(tickers) > MAX_LISTED_TICKERS:
-        listed += f" 외 {len(tickers) - MAX_LISTED_TICKERS}건"
-    return listed
+def short_company_name(company: object) -> str:
+    """Company name short enough for one phone line.
+
+    Drops the watchlist label and legal suffixes ("Mastercard Incorporated" ->
+    "Mastercard") and cuts what is still too long.
+    """
+    if company is None or (isinstance(company, float) and pd.isna(company)):
+        return ""
+    name = str(company).strip()
+    if name.startswith(WATCHLIST_LABEL):
+        name = name[len(WATCHLIST_LABEL) :].strip()
+    if name == "nan":
+        return ""
+    shortened = True
+    while shortened:
+        shortened = False
+        for suffix in COMPANY_SUFFIXES:
+            if name.lower().endswith(suffix.lower()) and len(name) > len(suffix):
+                name = name[: -len(suffix)].rstrip(" ,")
+                shortened = True
+    if len(name) > MAX_COMPANY_NAME_LENGTH:
+        name = name[: MAX_COMPANY_NAME_LENGTH - 1].rstrip() + "…"
+    return name

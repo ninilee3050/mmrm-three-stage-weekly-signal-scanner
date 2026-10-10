@@ -110,5 +110,5 @@ def test_alert_notes_that_crypto_week_is_not_finished() -> None:
 
     message = build_scan_message(events, pd.DataFrame(), 0, pd.Timestamp("2026-10-09"))
 
-    assert "• BTC-USD [관심] 비트코인" in message.splitlines()
-    assert message.splitlines()[-1] == "※ BTC-USD: 주말 거래 반영 전 결과입니다."
+    assert "▸ <b>BTC-USD</b> (비트코인)" in message.splitlines()
+    assert message.splitlines()[-1] == "※ BTC-USD: 주말 거래 반영 전"
