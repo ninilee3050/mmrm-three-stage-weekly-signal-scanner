@@ -6,13 +6,13 @@ import pandas as pd
 import pytest
 
 import notifier
+import telegram_api
 from notifier import (
-    NotificationError,
     build_failure_message,
     build_scan_message,
     notify_from_environment,
-    send_telegram_message,
 )
+from telegram_api import NotificationError, send_telegram_message
 
 SCAN_DATE = pd.Timestamp("2026-10-09")
 
@@ -125,7 +125,7 @@ def test_message_is_posted_to_the_configured_chat(monkeypatch) -> None:
         sent["body"] = json.loads(request.data.decode("utf-8"))
         return Response()
 
-    monkeypatch.setattr(notifier, "urlopen", fake_urlopen)
+    monkeypatch.setattr(telegram_api, "urlopen", fake_urlopen)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", " TEST-TOKEN ")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "4242")
 
@@ -140,7 +140,7 @@ def test_delivery_errors_do_not_reveal_the_token(monkeypatch) -> None:
     def failing_urlopen(request, timeout):
         raise HTTPError(request.full_url, 401, "Unauthorized", None, None)
 
-    monkeypatch.setattr(notifier, "urlopen", failing_urlopen)
+    monkeypatch.setattr(telegram_api, "urlopen", failing_urlopen)
 
     with pytest.raises(NotificationError) as error:
         send_telegram_message("text", "SECRET-TOKEN", "1")

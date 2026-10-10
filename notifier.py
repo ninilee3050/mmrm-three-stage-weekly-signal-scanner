@@ -7,26 +7,20 @@ them the scan runs as before and nothing is sent.
 
 from __future__ import annotations
 
-import http.client
-import json
 import os
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
 import pandas as pd
 
+from telegram_api import (
+    TELEGRAM_CHAT_ID_ENV,
+    TELEGRAM_TOKEN_ENV,
+    send_telegram_message,
+)
 from watchlist import is_weekend_traded
 
 
-TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
-TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID_ENV = "TELEGRAM_CHAT_ID"
 MAX_LISTED_TICKERS = 15
 PRIORITY_GRADE = "우선검토"
-
-
-class NotificationError(RuntimeError):
-    """Raised when a Telegram message could not be delivered."""
 
 
 def build_scan_message(
@@ -130,39 +124,6 @@ def notify_from_environment(text: str) -> bool:
         return False
     send_telegram_message(text, token, chat_id)
     return True
-
-
-def send_telegram_message(text: str, token: str, chat_id: str) -> None:
-    request = Request(
-        TELEGRAM_API_URL.format(token=token),
-        data=json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    # Error text never includes the request URL, because the URL holds the token.
-    try:
-        with urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        raise NotificationError(
-            f"텔레그램 전송 실패: HTTP {exc.code} ({_telegram_error_hint(exc.code)})"
-        ) from None
-    except (OSError, http.client.HTTPException, ValueError) as exc:
-        # URLError, timeouts and dropped connections all land here.
-        raise NotificationError(
-            f"텔레그램 전송 실패: {type(exc).__name__}"
-        ) from None
-    if not payload.get("ok"):
-        raise NotificationError("텔레그램 전송 실패: 응답이 올바르지 않습니다.")
-
-
-def _telegram_error_hint(status: int) -> str:
-    return {
-        400: "채팅 ID가 틀렸거나 봇에게 먼저 말을 걸지 않았습니다",
-        401: "봇 토큰이 틀렸습니다",
-        403: "봇을 차단했거나 대화를 시작하지 않았습니다",
-        404: "봇 토큰이 틀렸습니다",
-    }.get(status, "잠시 후 다시 시도해 주세요")
 
 
 def _stage_rows(

@@ -21,12 +21,12 @@ from market_cap_provider import (
 )
 from market_context import annotate_sp500_status, load_sp500_context
 from notifier import (
-    NotificationError,
     build_failure_message,
     build_scan_message,
     notify_from_environment,
 )
 from scanner import scan_signal_cycles
+from telegram_api import NotificationError
 from scenario_tracker import (
     ACTIVE_SCENARIO_COLUMNS,
     CLOSED_RESULT_COLUMNS,

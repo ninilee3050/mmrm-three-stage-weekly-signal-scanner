@@ -9,12 +9,13 @@ import pandas as pd
 import pytest
 
 import market_cap_provider
-import notifier
+import telegram_api
 import weekly_scan
 from data_provider import is_weekend_traded, weekly_bar_in_progress
 from gui.tables import restored_window_placement
 from market_cap_provider import MarketCapLoadError
-from notifier import NotificationError, build_scan_message, send_telegram_message
+from notifier import build_scan_message
+from telegram_api import NotificationError, send_telegram_message
 from scanner import scan_signal_cycles
 from scenario_tracker import merge_scan_universe
 from test_signal_cycles import make_frame, successful_cycle_setup
@@ -75,7 +76,7 @@ def test_connection_reset_during_telegram_send_is_a_notification_error(monkeypat
     def reset(request, timeout):
         raise ConnectionResetError(104, "Connection reset by peer")
 
-    monkeypatch.setattr(notifier, "urlopen", reset)
+    monkeypatch.setattr(telegram_api, "urlopen", reset)
 
     with pytest.raises(NotificationError, match="ConnectionResetError"):
         send_telegram_message("text", "TOKEN", "1")
