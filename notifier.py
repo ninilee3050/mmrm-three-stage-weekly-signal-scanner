@@ -36,15 +36,20 @@ def build_scan_message(
     scan_date: pd.Timestamp,
     warnings: list[str] | None = None,
     provisional: bool = False,
+    data_basis: str = "",
 ) -> str:
     """Summarize one scan as a short Telegram message, buy signals first.
 
     ``provisional`` marks a scan run before the week's Friday close, whose
-    current-week signals can still change.
+    current-week signals can still change; ``data_basis`` then says which
+    session the latest prices come from.
     """
     lines = [f"📈 MMRM 주간 스캔 ({pd.Timestamp(scan_date):%Y-%m-%d})", ""]
     if provisional:
-        lines += ["※ 이번 주 장 마감 전의 잠정 결과입니다.", ""]
+        lines.append("※ 이번 주 장 마감 전의 잠정 결과입니다.")
+        if data_basis:
+            lines.append(f"※ {data_basis}")
+        lines.append("")
 
     buys = _stage_rows(events, "3차 신호", "매수 성공")
     if buys.empty:

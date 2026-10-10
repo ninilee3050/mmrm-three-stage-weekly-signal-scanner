@@ -156,3 +156,34 @@ def test_scan_before_friday_close_is_marked_provisional() -> None:
     )
 
     assert message.splitlines()[2] == "※ 이번 주 장 마감 전의 잠정 결과입니다."
+
+
+def test_provisional_message_says_which_session_the_prices_are_from() -> None:
+    message = build_scan_message(
+        pd.DataFrame(),
+        pd.DataFrame(),
+        0,
+        SCAN_DATE,
+        provisional=True,
+        data_basis="미국 장 시작 전입니다. 목요일 종가까지 반영했습니다.",
+    )
+
+    assert message.splitlines()[2:5] == [
+        "※ 이번 주 장 마감 전의 잠정 결과입니다.",
+        "※ 미국 장 시작 전입니다. 목요일 종가까지 반영했습니다.",
+        "",
+    ]
+
+
+def test_data_basis_follows_the_new_york_clock() -> None:
+    from weekly_scan import data_basis_text
+
+    friday_before_open = pd.Timestamp("2026-10-16 01:00", tz="America/New_York")
+    friday_session = pd.Timestamp("2026-10-16 11:00", tz="America/New_York")
+    monday_before_open = pd.Timestamp("2026-10-19 08:00", tz="America/New_York")
+    saturday = pd.Timestamp("2026-10-17 10:00", tz="America/New_York")
+
+    assert data_basis_text(friday_before_open) == "미국 장 시작 전입니다. 목요일 종가까지 반영했습니다."
+    assert "장중 가격" in data_basis_text(friday_session)
+    assert "금요일 종가까지" in data_basis_text(monday_before_open)
+    assert "가장 최근 거래일" in data_basis_text(saturday)
