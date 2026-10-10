@@ -6,6 +6,12 @@ on:
     # Friday after the US close: the real weekly scan.
     - cron: "30 16 * * 5"
       timezone: "America/New_York"
+    # Friday afternoon in Korea (before the US open): provisional results
+    # from Thursday's close, so buy orders for the close can be placed that
+    # evening. Scheduled early because GitHub starts scheduled runs hours
+    # late; it must arrive by about 21:00 KST. Never changes tracking state.
+    - cron: "17 14 * * 5"
+      timezone: "Asia/Seoul"
     # Tuesday: only restores and re-saves the tracking state so the Actions
     # cache (dropped after 7 unused days) is never older than 4 days.
     - cron: "30 16 * * 2"
