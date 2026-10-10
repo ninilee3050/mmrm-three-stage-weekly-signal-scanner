@@ -8,7 +8,7 @@ from gui.config import (
     MARKET_CAP_RANK_COLUMN,
     SCAN_EVENT_DISPLAY_COLUMNS,
 )
-from gui.formatting import scanner_table_for_display
+from gui.formatting import _format_value, scanner_table_for_display
 from gui.tables import RANK_COLUMNS, sorted_row_order, table_sort_key
 from notifier import build_scan_message
 from watchlist import market_cap_rank_text
@@ -42,7 +42,9 @@ def test_scanner_tables_start_with_the_market_cap_rank() -> None:
 
     display = scanner_table_for_display(active, ACTIVE_SCENARIO_DISPLAY_COLUMNS)
 
-    assert display[MARKET_CAP_RANK_COLUMN].tolist() == ["8위", "관심", "순위 밖"]
+    assert MARKET_CAP_RANK_COLUMN == "현재 시총순위"
+    shown = [_format_value(value, MARKET_CAP_RANK_COLUMN) for value in display[MARKET_CAP_RANK_COLUMN]]
+    assert shown == ["8위", "관심", "순위 밖"]
     assert "순위" not in display.columns
     assert MARKET_CAP_RANK_COLUMN not in active.columns  # source is left unchanged
 
@@ -80,3 +82,27 @@ def test_alert_shows_ranks_for_ranked_companies_only() -> None:
     assert "• BTC-USD [관심] 비트코인" in lines
     assert "🟠 2차 신호 1건: META(8위)" in lines
     assert "🟢 1차 신호 1건: OLD" in lines
+
+
+def test_saved_ranking_is_available_before_the_top100_is_loaded(tmp_path) -> None:
+    import json
+
+    from market_cap_provider import load_saved_ranking
+
+    cache = tmp_path / "top100_cache.json"
+    assert load_saved_ranking(cache) == []
+    cache.write_text(
+        json.dumps(
+            {
+                "saved_at": "2026-10-10 09:00",
+                "companies": [
+                    {"rank": 1, "ticker": "NVDA", "company": "NVIDIA Corporation", "market_cap": "5.7T"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    saved = load_saved_ranking(cache)
+
+    assert [(c.rank, c.ticker, c.company) for c in saved] == [(1, "NVDA", "NVIDIA Corporation")]

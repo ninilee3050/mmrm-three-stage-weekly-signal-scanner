@@ -583,6 +583,7 @@ class ChartPreviewWindow(tk.Toplevel):
         data: pd.DataFrame,
         cycle: pd.Series | None,
         company: str = "",
+        rank_text: str = "",
         navigation_index: int | None = None,
         navigation_total: int = 0,
         chart_strength_summary: str = "",
@@ -614,6 +615,8 @@ class ChartPreviewWindow(tk.Toplevel):
         outcome = str(cycle.get("Outcome", "전체 차트")) if cycle is not None else "최근 3년"
         returns = cycle_return_summary(cycle)
         name = f" · {company}" if company and company.upper() != self.ticker else ""
+        if rank_text:
+            name += f" · {rank_text}"
         return_suffix = f"  |  {returns}" if returns else ""
         self.status_var.set(
             f"{self.ticker}{name}  |  1차 {first}  ·  2차 {second}  ·  "

@@ -187,7 +187,7 @@ def populate_table(
 
 
 WINDOW_GEOMETRY_PATTERN = re.compile(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$")
-RANK_COLUMNS = {"순위", "시총순위", "현재 시총순위"}
+RANK_COLUMNS = {"순위", "현재 시총순위"}
 SORT_BLANK_TEXTS = {"", "-", "해당 없음", "진행 중", "산정 대기", "미산출", "데이터 없음"}
 SORT_UNIT_MULTIPLIERS = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}
 _SORT_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}")
@@ -338,8 +338,10 @@ def _column_width(column: str) -> int:
         return 600
     if column in {"macd_area", "macd_flow"}:
         return 140
-    if column in {"순위", "시총순위", "현재 시총순위", "티커"}:
+    if column in {"순위", "티커"}:
         return 70
+    if column == "현재 시총순위":
+        return 95
     if column == "시가총액":
         return 95
     if column in {

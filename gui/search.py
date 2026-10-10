@@ -17,7 +17,7 @@ from data_provider import (
     normalize_ticker,
 )
 from indicators import calculate_indicators
-from market_cap_provider import MarketCapCompany
+from market_cap_provider import MarketCapCompany, load_saved_ranking
 from market_context import load_sp500_context
 from performance_analytics import build_ticker_performance, format_reach_rate
 from scanner import scan_signal_cycles
@@ -150,7 +150,9 @@ class SearchMixin:
         worker.start()
 
     def _company_for_ticker(self, ticker: str) -> MarketCapCompany:
-        for company in self.top100_companies:
+        # Before the Top 100 is loaded in this session, the ranking saved by the
+        # last scan still tells the company name and rank.
+        for company in self.top100_companies or load_saved_ranking():
             if company.ticker.upper() == ticker.upper():
                 return company
         return MarketCapCompany(
@@ -254,6 +256,9 @@ class SearchMixin:
     ) -> None:
         self.current_ticker = ticker.upper()
         self.current_company = company.company
+        self.current_rank_text = (
+            f"시총 {company.rank}위" if company.rank < WATCHLIST_RANK_START else ""
+        )
         self.current_chart_data = full_table.copy()
         self.current_signal_cycles = signal_cycles.reset_index(drop=True).copy()
         self.current_sp500_data = sp500_data.copy()
@@ -279,9 +284,7 @@ class SearchMixin:
             if not classifications.empty
             else pd.Series({"섹터": "미분류", "산업": "미분류"})
         )
-        rank_text = (
-            f"시총 {company.rank}위  |  " if company.rank < WATCHLIST_RANK_START else ""
-        )
+        rank_text = f"{self.current_rank_text}  |  " if self.current_rank_text else ""
         self.ticker_profile_var.set(
             f"{ticker}  |  {rank_text}섹터: {classification.get('섹터', '미분류')}  |  "
             f"산업: {classification.get('산업', '미분류')}"

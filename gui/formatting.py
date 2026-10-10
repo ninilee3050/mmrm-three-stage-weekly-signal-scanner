@@ -31,7 +31,7 @@ def scanner_table_for_display(
 ) -> pd.DataFrame:
     display = data.copy()
     if MARKET_CAP_RANK_COLUMN in columns and "순위" in display.columns:
-        display[MARKET_CAP_RANK_COLUMN] = display["순위"].map(market_cap_rank_text)
+        display[MARKET_CAP_RANK_COLUMN] = display["순위"]
     return display.reindex(columns=columns)
 
 
@@ -308,6 +308,8 @@ def _format_value(value: object, column: str = "") -> str:
         return ""
     if isinstance(value, pd.Timestamp):
         return value.strftime("%Y-%m-%d")
+    if column == MARKET_CAP_RANK_COLUMN and not isinstance(value, str):
+        return market_cap_rank_text(value)
     if (
         column.endswith("수익률")
         or column.endswith("손익률")
