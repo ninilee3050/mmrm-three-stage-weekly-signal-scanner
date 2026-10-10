@@ -14,7 +14,7 @@ import weekly_scan
 from data_provider import is_weekend_traded, weekly_bar_in_progress
 from gui.tables import restored_window_placement
 from market_cap_provider import MarketCapLoadError
-from notifier import NotificationError, send_telegram_message
+from notifier import NotificationError, build_scan_message, send_telegram_message
 from scanner import scan_signal_cycles
 from scenario_tracker import merge_scan_universe
 from test_signal_cycles import make_frame, successful_cycle_setup
@@ -79,6 +79,17 @@ def test_connection_reset_during_telegram_send_is_a_notification_error(monkeypat
 
     with pytest.raises(NotificationError, match="ConnectionResetError"):
         send_telegram_message("text", "TOKEN", "1")
+
+
+def test_alert_message_works_without_a_grade_column() -> None:
+    events = pd.DataFrame(
+        [{"티커": "MA", "회사명": "Mastercard", "단계": "3차 신호", "결과": "매수 성공"}]
+    )
+
+    message = build_scan_message(events, pd.DataFrame(), 0, pd.Timestamp("2026-10-09"))
+
+    assert "🔴 3차 매수 신호 1건" in message
+    assert "• MA Mastercard" in message
 
 
 def test_active_rows_without_market_cap_do_not_become_nan_text() -> None:
