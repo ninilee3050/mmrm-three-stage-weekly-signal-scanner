@@ -181,6 +181,7 @@ class HistoryChartMixin:
                 self.current_chart_data,
                 cycle,
                 company=self.current_company,
+                rank_text=self.current_rank_text,
                 navigation_index=position,
                 navigation_total=len(self.current_signal_cycles),
                 chart_strength_summary=self._chart_strength_summary(cycle),

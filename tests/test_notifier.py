@@ -12,18 +12,20 @@ from notifier import (
     build_scan_message,
     notify_from_environment,
     send_telegram_message,
+    short_company_name,
 )
 
-SCAN_DATE = pd.Timestamp("2026-10-09")
+SCAN_DATE = pd.Timestamp("2026-10-16")
 
 
-def event(ticker: str, stage: str, result: str, **extra: object) -> dict[str, object]:
+def event(ticker: str, company: str, stage: str, result: str, rank: int, **extra: object) -> dict:
     return {
+        "순위": rank,
         "티커": ticker,
-        "회사명": f"{ticker} Inc.",
+        "회사명": company,
         "단계": stage,
         "결과": result,
-        "신호일": pd.Timestamp("2026-10-05"),
+        "신호일": pd.Timestamp("2026-10-12"),
         "신호구분": "이번 주",
         "차트 강도": "",
         "검토등급": "",
@@ -31,34 +33,96 @@ def event(ticker: str, stage: str, result: str, **extra: object) -> dict[str, ob
     }
 
 
-def test_message_lists_buy_signals_with_priority_first() -> None:
+def buy(ticker: str, company: str, rank: int, score: str, grade: str, **extra: object) -> dict:
+    return event(
+        ticker, company, "3차 신호", "매수 성공", rank,
+        **{"차트 강도": score, "검토등급": grade, **extra},
+    )
+
+
+def waiting(ticker: str, company: str, state: str, rank: int) -> dict:
+    return {"순위": rank, "티커": ticker, "회사명": company, "현재상태": state}
+
+
+def test_message_lists_every_stage_with_this_weeks_changes_marked() -> None:
     events = pd.DataFrame(
         [
-            event("V", "3차 신호", "매수 성공", **{"차트 강도": "12.3점", "검토등급": "일반검토"}),
-            event("NVDA", "3차 신호", "매수 성공", **{"차트 강도": "82.5점", "검토등급": "우선검토"}),
-            event("META", "2차 신호", "3차 신호 대기"),
-            event("AAPL", "1차 신호", "2차 신호 대기"),
-            event("KO", "3차 신호", "실패"),
+            buy("V", "Visa Inc.", 18, "25.6점", "일반검토"),
+            buy("SAP", "SAP SE", 59, "79.2점", "우선검토"),
+            buy("BLK", "BlackRock, Inc.", 84, "22.9점", "일반검토"),
+            buy("MA", "Mastercard Incorporated", 23, "30.5점", "일반검토"),
+            event("META", "Meta Platforms, Inc.", "2차 신호", "3차 신호 대기", 8),
+            event("AAPL", "Apple Inc.", "1차 신호", "2차 신호 대기", 2),
+            event("KO", "The Coca-Cola Company", "3차 신호", "실패", 41),
+            event("PEP", "PepsiCo, Inc.", "2차 폐기", "폐기", 55),
         ]
     )
-    active = pd.DataFrame({"현재상태": ["3차 신호 대기", "3차 신호 대기", "2차 신호 대기"]})
+    active = pd.DataFrame(
+        [
+            waiting("TM", "Toyota Motor Corporation", "3차 신호 대기", 69),
+            waiting("JPM", "JPMorgan Chase & Co.", "3차 신호 대기", 12),
+            waiting("META", "Meta Platforms, Inc.", "3차 신호 대기", 8),
+            waiting("BTC-USD", "[관심] 비트코인", "2차 신호 대기", 9000),
+            waiting("AAPL", "Apple Inc.", "2차 신호 대기", 2),
+        ]
+    )
 
     message = build_scan_message(events, active, failure_count=1, scan_date=SCAN_DATE)
 
     assert message.splitlines() == [
-        "📈 MMRM 주간 스캔 (2026-10-09)",
+        "📈 MMRM 주간 스캔 · 10/16 (금) · 확정",
         "",
-        "🔴 3차 매수 신호 2건 (우선검토 1건)",
-        "• NVDA NVDA Inc. — 우선검토 82.5점",
-        "• V V Inc. — 일반검토 12.3점",
+        "🔴 3차 신호 · 매수 신호 발생 <b>4건</b>",
+        "▸ <code>59</code> <b>SAP</b> (SAP SE) — 79점 · 우선검토",
+        "▸ <code>23</code> <b>MA</b> (Mastercard) — 31점",
+        "▸ <code>18</code> <b>V</b> (Visa) — 26점",
+        "▸ <code>84</code> <b>BLK</b> (BlackRock) — 23점",
         "",
-        "🟠 2차 신호 1건: META",
-        "🟢 1차 신호 1건: AAPL",
-        "⚪ 3차 실패 1건: KO",
+        "🟠 2차 신호 · 3차 대기 중 <b>3건</b>",
+        "▸ <code>8</code> <b>META</b> (Meta Platforms) — 신규",
+        "▸ <code>12</code> <b>JPM</b> (JPMorgan Chase)",
+        "▸ <code>69</code> <b>TM</b> (Toyota Motor)",
         "",
-        "계속 관찰 3건 (3차 대기 2 · 2차 대기 1)",
+        "🟢 1차 신호 · 2차 대기 중 <b>2건</b>",
+        "▸ <code>2</code> <b>AAPL</b> (Apple) — 신규",
+        "▸ <code>관심</code> <b>BTC-USD</b> (비트코인)",
+        "",
+        "종료 <b>2건</b>",
+        "▸ <code>41</code> <b>KO</b> (The Coca-Cola) — 3차 실패",
+        "▸ <code>55</code> <b>PEP</b> (PepsiCo) — 2차 폐기",
+        "",
         "데이터 오류 1건",
     ]
+
+
+def test_new_arrivals_come_before_older_scenarios_of_a_better_rank() -> None:
+    events = pd.DataFrame([event("TM", "Toyota Motor Corporation", "2차 신호", "3차 신호 대기", 69)])
+    active = pd.DataFrame(
+        [
+            waiting("JPM", "JPMorgan Chase & Co.", "3차 신호 대기", 12),
+            waiting("TM", "Toyota Motor Corporation", "3차 신호 대기", 69),
+        ]
+    )
+
+    lines = build_scan_message(events, active, 0, SCAN_DATE).splitlines()
+
+    assert lines[4:] == [
+        "🟠 2차 신호 · 3차 대기 중 <b>2건</b>",
+        "▸ <code>69</code> <b>TM</b> (Toyota Motor) — 신규",
+        "▸ <code>12</code> <b>JPM</b> (JPMorgan Chase)",
+    ]
+
+
+def test_long_stage_list_is_cut_with_a_remaining_count() -> None:
+    active = pd.DataFrame(
+        [waiting(f"T{rank}", f"Company {rank}", "3차 신호 대기", rank) for rank in range(1, 19)]
+    )
+
+    lines = build_scan_message(pd.DataFrame(), active, 0, SCAN_DATE).splitlines()
+
+    assert lines[4] == "🟠 2차 신호 · 3차 대기 중 <b>18건</b>"
+    assert len(lines[5:]) == 16
+    assert lines[-1] == "▸ 외 3건"
 
 
 def test_message_without_signals_and_with_warning() -> None:
@@ -71,30 +135,104 @@ def test_message_without_signals_and_with_warning() -> None:
     )
 
     assert message.splitlines() == [
-        "📈 MMRM 주간 스캔 (2026-10-09)",
+        "📈 MMRM 주간 스캔 · 10/16 (금) · 확정",
         "",
-        "3차 매수 신호 없음",
+        "3차 신호 · 매수 신호 없음",
         "",
-        "계속 관찰 0건 (3차 대기 0 · 2차 대기 0)",
         "⚠️ 저장한 목록을 사용합니다.",
     ]
 
 
+def test_watchlist_and_unranked_tickers_show_a_label_instead_of_a_rank() -> None:
+    events = pd.DataFrame(
+        [
+            buy("BTC-USD", "[관심] 비트코인", 9000, "해당 없음", ""),
+            buy("OLD", "Old Co.", 9999, "40.0점", "일반검토"),
+        ]
+    )
+
+    lines = build_scan_message(events, pd.DataFrame(), 0, SCAN_DATE).splitlines()
+
+    assert "▸ <code>순위 밖</code> <b>OLD</b> (Old) — 40점" in lines
+    assert "▸ <code>관심</code> <b>BTC-USD</b> (비트코인)" in lines
+    assert lines[-1] == "※ BTC-USD: 주말 거래 반영 전"
+
+
 def test_signal_from_a_missed_week_shows_its_week() -> None:
     events = pd.DataFrame(
-        [event("MA", "3차 신호", "매수 성공", 신호구분="미확인 기간", 신호일=pd.Timestamp("2026-09-28"))]
+        [buy("MA", "Mastercard Incorporated", 23, "30.5점", "일반검토",
+             신호구분="미확인 기간", 신호일=pd.Timestamp("2026-09-28"))]
     )
 
     message = build_scan_message(events, pd.DataFrame(), 0, SCAN_DATE)
 
-    assert "• MA MA Inc. (09/28 주 신호)" in message
+    assert "▸ <code>23</code> <b>MA</b> (Mastercard) — 31점 (09/28 주)" in message.splitlines()
 
 
-def test_failure_message_names_the_error() -> None:
-    message = build_failure_message("목록을 찾지 못했습니다.", SCAN_DATE)
+def test_events_without_rank_grade_or_score_columns_are_still_listed() -> None:
+    events = pd.DataFrame(
+        [{"티커": "MA", "회사명": "Mastercard", "단계": "3차 신호", "결과": "매수 성공"}]
+    )
 
-    assert message.startswith("⚠️ MMRM 주간 스캔 실패 (2026-10-09)")
-    assert "목록을 찾지 못했습니다." in message
+    lines = build_scan_message(events, pd.DataFrame(), 0, SCAN_DATE).splitlines()
+
+    assert lines[2:4] == ["🔴 3차 신호 · 매수 신호 발생 <b>1건</b>", "▸ <b>MA</b> (Mastercard)"]
+
+
+def test_provisional_message_has_a_one_line_notice() -> None:
+    with_basis = build_scan_message(
+        pd.DataFrame(), pd.DataFrame(), 0, SCAN_DATE, provisional=True, data_basis="목요일 종가까지 반영"
+    )
+    without_basis = build_scan_message(pd.DataFrame(), pd.DataFrame(), 0, SCAN_DATE, provisional=True)
+
+    assert with_basis.splitlines()[:3] == [
+        "📈 MMRM 주간 스캔 · 10/16 (금) · 잠정",
+        "※ 목요일 종가까지 반영",
+        "",
+    ]
+    assert without_basis.splitlines()[1] == "※ 이번 주 장 마감 전"
+
+
+def test_data_basis_follows_the_new_york_clock() -> None:
+    from weekly_scan import data_basis_text
+
+    friday_before_open = pd.Timestamp("2026-10-16 01:00", tz="America/New_York")
+    friday_session = pd.Timestamp("2026-10-16 11:00", tz="America/New_York")
+    monday_before_open = pd.Timestamp("2026-10-19 08:00", tz="America/New_York")
+    saturday = pd.Timestamp("2026-10-17 10:00", tz="America/New_York")
+
+    assert data_basis_text(friday_before_open) == "목요일 종가까지 반영"
+    assert data_basis_text(friday_session) == "오늘 미국 장중 가격 포함"
+    assert data_basis_text(monday_before_open) == "금요일 종가까지 반영"
+    assert data_basis_text(saturday) == "최근 거래일 종가까지 반영"
+
+
+def test_company_names_are_shortened_to_fit_one_line() -> None:
+    assert short_company_name("Mastercard Incorporated") == "Mastercard"
+    assert short_company_name("Meta Platforms, Inc.") == "Meta Platforms"
+    assert short_company_name("JPMorgan Chase & Co.") == "JPMorgan Chase"
+    assert short_company_name("UnitedHealth Group Incorporated") == "UnitedHealth"
+    assert short_company_name("SAP SE") == "SAP SE"
+    assert short_company_name("[관심] 비트코인") == "비트코인"
+    assert short_company_name("Taiwan Semiconductor Manufacturing Company Limited") == "Taiwan Semicond…"
+    assert short_company_name(None) == ""
+    assert short_company_name(float("nan")) == ""
+
+
+def test_text_from_outside_is_escaped_for_html() -> None:
+    message = build_scan_message(
+        pd.DataFrame([event("A&B", "AT&T Inc.", "2차 신호", "3차 신호 대기", 60)]),
+        pd.DataFrame([waiting("A&B", "AT&T Inc.", "3차 신호 대기", 60)]),
+        0,
+        SCAN_DATE,
+        warnings=["<목록> 오류 & 재시도"],
+    )
+    failure = build_failure_message("HTTP <500> & retry", SCAN_DATE)
+
+    assert "▸ <code>60</code> <b>A&amp;B</b> (AT&amp;T) — 신규" in message.splitlines()
+    assert "⚠️ &lt;목록&gt; 오류 &amp; 재시도" in message
+    assert failure.startswith("⚠️ MMRM 주간 스캔 실패 · 10/16 (금)")
+    assert "HTTP &lt;500&gt; &amp; retry" in failure
 
 
 def test_nothing_is_sent_without_telegram_settings(monkeypatch) -> None:
@@ -107,7 +245,7 @@ def test_nothing_is_sent_without_telegram_settings(monkeypatch) -> None:
     assert notify_from_environment("hello") is False
 
 
-def test_message_is_posted_to_the_configured_chat(monkeypatch) -> None:
+def test_message_is_posted_as_html_to_the_configured_chat(monkeypatch) -> None:
     sent = {}
 
     class Response:
@@ -129,9 +267,9 @@ def test_message_is_posted_to_the_configured_chat(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", " TEST-TOKEN ")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "4242")
 
-    assert notify_from_environment("스캔 결과") is True
+    assert notify_from_environment("<b>SAP</b>") is True
     assert sent["url"] == "https://api.telegram.org/botTEST-TOKEN/sendMessage"
-    assert sent["body"] == {"chat_id": "4242", "text": "스캔 결과"}
+    assert sent["body"] == {"chat_id": "4242", "text": "<b>SAP</b>", "parse_mode": "HTML"}
 
 
 def test_delivery_errors_do_not_reveal_the_token(monkeypatch) -> None:
@@ -148,42 +286,3 @@ def test_delivery_errors_do_not_reveal_the_token(monkeypatch) -> None:
     assert "SECRET-TOKEN" not in str(error.value)
     assert "봇 토큰이 틀렸습니다" in str(error.value)
     assert error.value.__cause__ is None
-
-
-def test_scan_before_friday_close_is_marked_provisional() -> None:
-    message = build_scan_message(
-        pd.DataFrame(), pd.DataFrame(), 0, SCAN_DATE, provisional=True
-    )
-
-    assert message.splitlines()[2] == "※ 이번 주 장 마감 전의 잠정 결과입니다."
-
-
-def test_provisional_message_says_which_session_the_prices_are_from() -> None:
-    message = build_scan_message(
-        pd.DataFrame(),
-        pd.DataFrame(),
-        0,
-        SCAN_DATE,
-        provisional=True,
-        data_basis="미국 장 시작 전입니다. 목요일 종가까지 반영했습니다.",
-    )
-
-    assert message.splitlines()[2:5] == [
-        "※ 이번 주 장 마감 전의 잠정 결과입니다.",
-        "※ 미국 장 시작 전입니다. 목요일 종가까지 반영했습니다.",
-        "",
-    ]
-
-
-def test_data_basis_follows_the_new_york_clock() -> None:
-    from weekly_scan import data_basis_text
-
-    friday_before_open = pd.Timestamp("2026-10-16 01:00", tz="America/New_York")
-    friday_session = pd.Timestamp("2026-10-16 11:00", tz="America/New_York")
-    monday_before_open = pd.Timestamp("2026-10-19 08:00", tz="America/New_York")
-    saturday = pd.Timestamp("2026-10-17 10:00", tz="America/New_York")
-
-    assert data_basis_text(friday_before_open) == "미국 장 시작 전입니다. 목요일 종가까지 반영했습니다."
-    assert "장중 가격" in data_basis_text(friday_session)
-    assert "금요일 종가까지" in data_basis_text(monday_before_open)
-    assert "가장 최근 거래일" in data_basis_text(saturday)

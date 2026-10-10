@@ -243,11 +243,11 @@ def data_basis_text(now: pd.Timestamp | None = None) -> str:
         now = pd.Timestamp.now(tz="America/New_York")
     minutes = now.hour * 60 + now.minute
     if now.weekday() >= 5 or minutes >= 16 * 60:
-        return "가장 최근 거래일 종가까지 반영했습니다."
+        return "최근 거래일 종가까지 반영"
     if minutes >= 9 * 60 + 30:
-        return "오늘 미국 장중 가격까지 반영했습니다. 마감까지 바뀔 수 있습니다."
+        return "오늘 미국 장중 가격 포함"
     previous = ["금요일", "월요일", "화요일", "수요일", "목요일"][now.weekday()]
-    return f"미국 장 시작 전입니다. {previous} 종가까지 반영했습니다."
+    return f"{previous} 종가까지 반영"
 
 
 def state_restore_warning() -> str:

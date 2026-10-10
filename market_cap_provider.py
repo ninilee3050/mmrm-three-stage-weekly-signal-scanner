@@ -126,6 +126,14 @@ def _save_ranking_cache(
         pass  # The cache is only a fallback; the live list is still returned.
 
 
+def load_saved_ranking(
+    cache_path: Path | str | None = TOP100_CACHE_PATH,
+) -> list[MarketCapCompany]:
+    """The ranking saved by the last successful fetch, or an empty list."""
+    cached = _load_ranking_cache(cache_path, limit=10_000)
+    return cached[0] if cached else []
+
+
 def _load_ranking_cache(
     cache_path: Path | str | None,
     limit: int,

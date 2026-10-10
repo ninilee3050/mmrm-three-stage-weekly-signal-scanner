@@ -187,12 +187,13 @@ def populate_table(
 
 
 WINDOW_GEOMETRY_PATTERN = re.compile(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$")
+RANK_COLUMNS = {"순위", "현재 시총순위"}
 SORT_BLANK_TEXTS = {"", "-", "해당 없음", "진행 중", "산정 대기", "미산출", "데이터 없음"}
 SORT_UNIT_MULTIPLIERS = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}
 _SORT_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}")
 # A number, an optional unit, and optionally a "(3/4)" style detail; nothing else.
 _SORT_NUMBER_PATTERN = re.compile(
-    r"^([+-]?[\d,]*\.?\d+)\s*([KMBT])?(?:%p|%|점|건|개월|개)?(?:\s*\(.*\))?$"
+    r"^([+-]?[\d,]*\.?\d+)\s*([KMBT])?(?:%p|%|점|건|개월|개|위)?(?:\s*\(.*\))?$"
 )
 
 
@@ -235,8 +236,9 @@ def sort_table_by_column(tree: ttk.Treeview, column: str) -> None:
     if previous is not None and previous[0] == column:
         descending = not previous[1]
     else:
-        # Largest first is the useful default for rates, returns and scores.
-        descending = numeric
+        # Largest first is the useful default for rates, returns and scores;
+        # ranks read naturally from 1 upward.
+        descending = numeric and column not in RANK_COLUMNS
     for position, index in enumerate(sorted_row_order(texts, descending)):
         tree.move(items[index], "", position)
     tree._mmrm_sort_state = (column, descending)
@@ -336,8 +338,10 @@ def _column_width(column: str) -> int:
         return 600
     if column in {"macd_area", "macd_flow"}:
         return 140
-    if column in {"순위", "현재 시총순위", "티커"}:
+    if column in {"순위", "티커"}:
         return 70
+    if column == "현재 시총순위":
+        return 95
     if column == "시가총액":
         return 95
     if column in {

@@ -5,7 +5,9 @@ from __future__ import annotations
 import pandas as pd
 
 from performance_analytics import format_rate, format_reach_rate
+from watchlist import market_cap_rank_text
 from gui.config import (
+    MARKET_CAP_RANK_COLUMN,
     FIELD_DISPLAY_COLUMNS,
     RANKING_DISPLAY_COLUMNS,
     SIGNAL_HISTORY_DISPLAY_COLUMNS,
@@ -27,7 +29,10 @@ def scanner_table_for_display(
     data: pd.DataFrame,
     columns: list[str],
 ) -> pd.DataFrame:
-    return data.reindex(columns=columns).copy()
+    display = data.copy()
+    if MARKET_CAP_RANK_COLUMN in columns and "순위" in display.columns:
+        display[MARKET_CAP_RANK_COLUMN] = display["순위"]
+    return display.reindex(columns=columns)
 
 
 def active_scenario_tag(state: object) -> str:
@@ -303,6 +308,8 @@ def _format_value(value: object, column: str = "") -> str:
         return ""
     if isinstance(value, pd.Timestamp):
         return value.strftime("%Y-%m-%d")
+    if column == MARKET_CAP_RANK_COLUMN and not isinstance(value, str):
+        return market_cap_rank_text(value)
     if (
         column.endswith("수익률")
         or column.endswith("손익률")

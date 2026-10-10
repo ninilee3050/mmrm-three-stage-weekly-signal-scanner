@@ -129,6 +129,7 @@ class BuyPointApp(
         self.selected_field: str | None = None
         self.current_ticker: str | None = None
         self.current_company = ""
+        self.current_rank_text = ""
         self.current_chart_data = pd.DataFrame()
         self.current_signal_cycles = pd.DataFrame()
         self.current_sp500_data = pd.DataFrame()
