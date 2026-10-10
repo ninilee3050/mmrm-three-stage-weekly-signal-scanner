@@ -19,6 +19,8 @@ from market_cap_provider import MarketCapCompany
 WATCHLIST_PATH = Path("watchlist.txt")
 # Watchlist entries sort after every ranked company.
 WATCHLIST_RANK_START = 9000
+# Rank kept for a tracked ticker that is no longer in the Top 100.
+OUT_OF_RANKING_RANK = 9999
 WATCHLIST_LABEL = "[관심]"
 WATCHLIST_FILE_HEADER = (
     "# 관심종목: 통합 스캔과 금요일 자동 스캔에 Top 100과 함께 포함됩니다.\n"
@@ -34,6 +36,23 @@ class WatchlistItem:
     @property
     def display_name(self) -> str:
         return self.name or self.ticker
+
+
+def market_cap_rank_text(rank: object) -> str:
+    """Display text for a company's rank: "8위", "관심" or "순위 밖".
+
+    Watchlist entries carry ranks from ``WATCHLIST_RANK_START``; a tracked
+    ticker that has left the ranking carries the out-of-ranking default.
+    """
+    number = pd.to_numeric(pd.Series([rank]), errors="coerce").iloc[0]
+    if pd.isna(number):
+        return ""
+    number = int(number)
+    if number < WATCHLIST_RANK_START:
+        return f"{number}위"
+    if number < OUT_OF_RANKING_RANK:
+        return "관심"
+    return "순위 밖"
 
 
 def load_watchlist(path: Path | str = WATCHLIST_PATH) -> list[WatchlistItem]:

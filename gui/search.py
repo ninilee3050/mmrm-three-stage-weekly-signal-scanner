@@ -22,6 +22,7 @@ from market_context import load_sp500_context
 from performance_analytics import build_ticker_performance, format_reach_rate
 from scanner import scan_signal_cycles
 from sector_provider import load_sector_classifications
+from watchlist import WATCHLIST_RANK_START
 from gui.config import SIGNAL_HISTORY_COLUMN_BOUNDS
 from gui.scan_results import annotate_signal_history_display
 from gui.storage import save_signal_outputs
@@ -278,8 +279,11 @@ class SearchMixin:
             if not classifications.empty
             else pd.Series({"섹터": "미분류", "산업": "미분류"})
         )
+        rank_text = (
+            f"시총 {company.rank}위  |  " if company.rank < WATCHLIST_RANK_START else ""
+        )
         self.ticker_profile_var.set(
-            f"{ticker}  |  섹터: {classification.get('섹터', '미분류')}  |  "
+            f"{ticker}  |  {rank_text}섹터: {classification.get('섹터', '미분류')}  |  "
             f"산업: {classification.get('산업', '미분류')}"
         )
         base = performance_by_horizon[3]

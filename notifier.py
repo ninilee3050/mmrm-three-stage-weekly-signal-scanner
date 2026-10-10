@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
-from watchlist import is_weekend_traded
+from watchlist import is_weekend_traded, market_cap_rank_text
 
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
@@ -185,6 +185,9 @@ def _stage_rows(
 
 def _buy_line(row: pd.Series) -> str:
     text = f"{row.get('티커', '')} {row.get('회사명', '')}".strip()
+    rank = _ranked_text(row.get("순위"))
+    if rank:
+        text += f" (시총 {rank})"
     grade = str(row.get("검토등급", "") or "").strip()
     score = str(row.get("차트 강도", "") or "").strip()
     detail = " ".join(
@@ -199,8 +202,18 @@ def _buy_line(row: pd.Series) -> str:
     return text
 
 
+def _ranked_text(rank: object) -> str:
+    """"8위" for a ranked company; "" for watchlist or out-of-ranking tickers."""
+    text = market_cap_rank_text(rank)
+    return text if text.endswith("위") else ""
+
+
 def _ticker_list(rows: pd.DataFrame) -> str:
-    tickers = [str(ticker) for ticker in rows["티커"].tolist()]
+    ranks = rows["순위"].tolist() if "순위" in rows.columns else [None] * len(rows)
+    tickers = [
+        f"{ticker}({_ranked_text(rank)})" if _ranked_text(rank) else str(ticker)
+        for ticker, rank in zip(rows["티커"].tolist(), ranks)
+    ]
     listed = ", ".join(tickers[:MAX_LISTED_TICKERS])
     if len(tickers) > MAX_LISTED_TICKERS:
         listed += f" 외 {len(tickers) - MAX_LISTED_TICKERS}건"

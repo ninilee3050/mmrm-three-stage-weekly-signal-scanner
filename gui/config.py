@@ -31,7 +31,9 @@ SIGNAL_HISTORY_DISPLAY_COLUMNS = [
     "12개월후 수익률",
 ]
 SCAN_FAILURE_COLUMNS = ["순위", "티커", "회사명", "시가총액", "오류"]
+MARKET_CAP_RANK_COLUMN = "시총순위"
 SCAN_EVENT_DISPLAY_COLUMNS = [
+    MARKET_CAP_RANK_COLUMN,
     "티커",
     "회사명",
     "섹터",
@@ -47,6 +49,7 @@ SCAN_EVENT_DISPLAY_COLUMNS = [
     "데이터기준일",
 ]
 ACTIVE_SCENARIO_DISPLAY_COLUMNS = [
+    MARKET_CAP_RANK_COLUMN,
     "티커",
     "회사명",
     "섹터",
@@ -62,6 +65,7 @@ ACTIVE_SCENARIO_DISPLAY_COLUMNS = [
     "데이터상태",
 ]
 CLOSED_RESULT_DISPLAY_COLUMNS = [
+    MARKET_CAP_RANK_COLUMN,
     "티커",
     "회사명",
     "섹터",
