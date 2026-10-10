@@ -70,7 +70,7 @@ def test_message_lists_every_stage_with_this_weeks_changes_marked() -> None:
     message = build_scan_message(events, active, failure_count=1, scan_date=SCAN_DATE)
 
     assert message.splitlines() == [
-        "📈 MMRM 주간 스캔 · 10/16",
+        "📈 MMRM 주간 스캔 · 10/16 (금) · 확정",
         "",
         "🔴 3차 신호 · 매수 신호 발생 <b>4건</b>",
         "▸ <code>59</code> <b>SAP</b> (SAP SE) — 79점 · 우선검토",
@@ -135,7 +135,7 @@ def test_message_without_signals_and_with_warning() -> None:
     )
 
     assert message.splitlines() == [
-        "📈 MMRM 주간 스캔 · 10/16",
+        "📈 MMRM 주간 스캔 · 10/16 (금) · 확정",
         "",
         "3차 신호 · 매수 신호 없음",
         "",
@@ -186,11 +186,11 @@ def test_provisional_message_has_a_one_line_notice() -> None:
     without_basis = build_scan_message(pd.DataFrame(), pd.DataFrame(), 0, SCAN_DATE, provisional=True)
 
     assert with_basis.splitlines()[:3] == [
-        "📈 MMRM 주간 스캔 · 10/16",
-        "※ 잠정 결과 · 목요일 종가까지 반영",
+        "📈 MMRM 주간 스캔 · 10/16 (금) · 잠정",
+        "※ 목요일 종가까지 반영",
         "",
     ]
-    assert without_basis.splitlines()[1] == "※ 잠정 결과 · 이번 주 장 마감 전"
+    assert without_basis.splitlines()[1] == "※ 이번 주 장 마감 전"
 
 
 def test_data_basis_follows_the_new_york_clock() -> None:
@@ -231,7 +231,7 @@ def test_text_from_outside_is_escaped_for_html() -> None:
 
     assert "▸ <code>60</code> <b>A&amp;B</b> (AT&amp;T) — 신규" in message.splitlines()
     assert "⚠️ &lt;목록&gt; 오류 &amp; 재시도" in message
-    assert failure.startswith("⚠️ MMRM 주간 스캔 실패 · 10/16")
+    assert failure.startswith("⚠️ MMRM 주간 스캔 실패 · 10/16 (금)")
     assert "HTTP &lt;500&gt; &amp; retry" in failure
 
 

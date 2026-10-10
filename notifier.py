@@ -47,6 +47,7 @@ COMPANY_SUFFIXES = (
 )
 PRIORITY_GRADE = "우선검토"
 NEW_LABEL = "신규"
+WEEKDAY_NAMES = "월화수목금토일"
 # (heading, 현재상태 of the active scenario, signal that puts a stock there)
 WAITING_STAGES = (
     ("🟠 2차 신호 · 3차 대기 중", "3차 신호 대기", "2차 신호"),
@@ -83,10 +84,9 @@ def build_scan_message(
     current-week signals can still change; ``data_basis`` then says which
     session the latest prices come from.
     """
-    lines = [f"📈 MMRM 주간 스캔 · {pd.Timestamp(scan_date):%m/%d}"]
+    lines = [f"📈 MMRM 주간 스캔 · {_date_label(scan_date)} · {'잠정' if provisional else '확정'}"]
     if provisional:
-        basis = escape(data_basis) if data_basis else "이번 주 장 마감 전"
-        lines.append(f"※ 잠정 결과 · {basis}")
+        lines.append(f"※ {escape(data_basis) if data_basis else '이번 주 장 마감 전'}")
 
     buys = _stage_rows(events, "3차 신호", "매수 성공")
     lines.append("")
@@ -140,7 +140,7 @@ def build_scan_message(
 
 def build_failure_message(error: object, scan_date: pd.Timestamp) -> str:
     return (
-        f"⚠️ MMRM 주간 스캔 실패 · {pd.Timestamp(scan_date):%m/%d}\n\n"
+        f"⚠️ MMRM 주간 스캔 실패 · {_date_label(scan_date)}\n\n"
         f"{escape(str(error))}\n\nGitHub Actions 실행 기록을 확인해 주세요."
     )
 
@@ -202,6 +202,12 @@ def _stage_rows(
     if result is not None:
         mask &= events["결과"] == result
     return events[mask]
+
+
+def _date_label(date: pd.Timestamp) -> str:
+    """"10/16 (금)" for the scan date."""
+    date = pd.Timestamp(date)
+    return f"{date:%m/%d} ({WEEKDAY_NAMES[date.weekday()]})"
 
 
 def _heading(label: str, count: int) -> str:
