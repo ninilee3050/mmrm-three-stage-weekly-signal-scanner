@@ -40,7 +40,11 @@ def buy(ticker: str, company: str, rank: int, score: str, grade: str, **extra: o
     )
 
 
-def test_each_stock_line_has_rank_ticker_company_and_score() -> None:
+def waiting(ticker: str, company: str, state: str, rank: int) -> dict:
+    return {"순위": rank, "티커": ticker, "회사명": company, "현재상태": state}
+
+
+def test_message_lists_every_stage_with_this_weeks_changes_marked() -> None:
     events = pd.DataFrame(
         [
             buy("V", "Visa Inc.", 18, "25.6점", "일반검토"),
@@ -50,33 +54,75 @@ def test_each_stock_line_has_rank_ticker_company_and_score() -> None:
             event("META", "Meta Platforms, Inc.", "2차 신호", "3차 신호 대기", 8),
             event("AAPL", "Apple Inc.", "1차 신호", "2차 신호 대기", 2),
             event("KO", "The Coca-Cola Company", "3차 신호", "실패", 41),
+            event("PEP", "PepsiCo, Inc.", "2차 폐기", "폐기", 55),
         ]
     )
-    active = pd.DataFrame({"현재상태": ["3차 신호 대기", "3차 신호 대기", "2차 신호 대기"]})
+    active = pd.DataFrame(
+        [
+            waiting("TM", "Toyota Motor Corporation", "3차 신호 대기", 69),
+            waiting("JPM", "JPMorgan Chase & Co.", "3차 신호 대기", 12),
+            waiting("META", "Meta Platforms, Inc.", "3차 신호 대기", 8),
+            waiting("BTC-USD", "[관심] 비트코인", "2차 신호 대기", 9000),
+            waiting("AAPL", "Apple Inc.", "2차 신호 대기", 2),
+        ]
+    )
 
     message = build_scan_message(events, active, failure_count=1, scan_date=SCAN_DATE)
 
     assert message.splitlines() == [
         "📈 MMRM 주간 스캔 · 10/16",
         "",
-        "🔴 3차 매수 신호 4건",
+        "🔴 3차 신호 · 매수 신호 발생 <b>4건</b>",
         "▸ <code>59</code> <b>SAP</b> (SAP SE) — 79점 · 우선검토",
         "▸ <code>23</code> <b>MA</b> (Mastercard) — 31점",
         "▸ <code>18</code> <b>V</b> (Visa) — 26점",
         "▸ <code>84</code> <b>BLK</b> (BlackRock) — 23점",
         "",
-        "🟠 2차 신호 1건",
-        "▸ <code>8</code> <b>META</b> (Meta Platforms)",
+        "🟠 2차 신호 · 3차 대기 중 <b>3건</b>",
+        "▸ <code>8</code> <b>META</b> (Meta Platforms) — 신규",
+        "▸ <code>12</code> <b>JPM</b> (JPMorgan Chase)",
+        "▸ <code>69</code> <b>TM</b> (Toyota Motor)",
         "",
-        "🟢 1차 신호 1건",
-        "▸ <code>2</code> <b>AAPL</b> (Apple)",
+        "🟢 1차 신호 · 2차 대기 중 <b>2건</b>",
+        "▸ <code>2</code> <b>AAPL</b> (Apple) — 신규",
+        "▸ <code>관심</code> <b>BTC-USD</b> (비트코인)",
         "",
-        "⚪ 3차 실패 1건",
-        "▸ <code>41</code> <b>KO</b> (The Coca-Cola)",
+        "종료 <b>2건</b>",
+        "▸ <code>41</code> <b>KO</b> (The Coca-Cola) — 3차 실패",
+        "▸ <code>55</code> <b>PEP</b> (PepsiCo) — 2차 폐기",
         "",
-        "계속 관찰 3건 (3차 대기 2 · 2차 대기 1)",
         "데이터 오류 1건",
     ]
+
+
+def test_new_arrivals_come_before_older_scenarios_of_a_better_rank() -> None:
+    events = pd.DataFrame([event("TM", "Toyota Motor Corporation", "2차 신호", "3차 신호 대기", 69)])
+    active = pd.DataFrame(
+        [
+            waiting("JPM", "JPMorgan Chase & Co.", "3차 신호 대기", 12),
+            waiting("TM", "Toyota Motor Corporation", "3차 신호 대기", 69),
+        ]
+    )
+
+    lines = build_scan_message(events, active, 0, SCAN_DATE).splitlines()
+
+    assert lines[4:] == [
+        "🟠 2차 신호 · 3차 대기 중 <b>2건</b>",
+        "▸ <code>69</code> <b>TM</b> (Toyota Motor) — 신규",
+        "▸ <code>12</code> <b>JPM</b> (JPMorgan Chase)",
+    ]
+
+
+def test_long_stage_list_is_cut_with_a_remaining_count() -> None:
+    active = pd.DataFrame(
+        [waiting(f"T{rank}", f"Company {rank}", "3차 신호 대기", rank) for rank in range(1, 19)]
+    )
+
+    lines = build_scan_message(pd.DataFrame(), active, 0, SCAN_DATE).splitlines()
+
+    assert lines[4] == "🟠 2차 신호 · 3차 대기 중 <b>18건</b>"
+    assert len(lines[5:]) == 16
+    assert lines[-1] == "▸ 외 3건"
 
 
 def test_message_without_signals_and_with_warning() -> None:
@@ -91,9 +137,8 @@ def test_message_without_signals_and_with_warning() -> None:
     assert message.splitlines() == [
         "📈 MMRM 주간 스캔 · 10/16",
         "",
-        "3차 매수 신호 없음",
+        "3차 신호 · 매수 신호 없음",
         "",
-        "계속 관찰 0건 (3차 대기 0 · 2차 대기 0)",
         "⚠️ 저장한 목록을 사용합니다.",
     ]
 
@@ -131,7 +176,7 @@ def test_events_without_rank_grade_or_score_columns_are_still_listed() -> None:
 
     lines = build_scan_message(events, pd.DataFrame(), 0, SCAN_DATE).splitlines()
 
-    assert lines[2:4] == ["🔴 3차 매수 신호 1건", "▸ <b>MA</b> (Mastercard)"]
+    assert lines[2:4] == ["🔴 3차 신호 · 매수 신호 발생 <b>1건</b>", "▸ <b>MA</b> (Mastercard)"]
 
 
 def test_provisional_message_has_a_one_line_notice() -> None:
@@ -177,14 +222,14 @@ def test_company_names_are_shortened_to_fit_one_line() -> None:
 def test_text_from_outside_is_escaped_for_html() -> None:
     message = build_scan_message(
         pd.DataFrame([event("A&B", "AT&T Inc.", "2차 신호", "3차 신호 대기", 60)]),
-        pd.DataFrame(),
+        pd.DataFrame([waiting("A&B", "AT&T Inc.", "3차 신호 대기", 60)]),
         0,
         SCAN_DATE,
         warnings=["<목록> 오류 & 재시도"],
     )
     failure = build_failure_message("HTTP <500> & retry", SCAN_DATE)
 
-    assert "▸ <code>60</code> <b>A&amp;B</b> (AT&amp;T)" in message.splitlines()
+    assert "▸ <code>60</code> <b>A&amp;B</b> (AT&amp;T) — 신규" in message.splitlines()
     assert "⚠️ &lt;목록&gt; 오류 &amp; 재시도" in message
     assert failure.startswith("⚠️ MMRM 주간 스캔 실패 · 10/16")
     assert "HTTP &lt;500&gt; &amp; retry" in failure

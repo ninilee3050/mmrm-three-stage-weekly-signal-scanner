@@ -46,6 +46,12 @@ COMPANY_SUFFIXES = (
     " S.A.",
 )
 PRIORITY_GRADE = "우선검토"
+NEW_LABEL = "신규"
+# (heading, 현재상태 of the active scenario, signal that puts a stock there)
+WAITING_STAGES = (
+    ("🟠 2차 신호 · 3차 대기 중", "3차 신호 대기", "2차 신호"),
+    ("🟢 1차 신호 · 2차 대기 중", "2차 신호 대기", "1차 신호"),
+)
 
 
 class NotificationError(RuntimeError):
@@ -62,6 +68,11 @@ def build_scan_message(
     data_basis: str = "",
 ) -> str:
     """Summarize one scan as a short Telegram message (HTML formatting).
+
+    The message is the active-scenario list grouped by stage, with this
+    week's changes marked in it: buy signals first, then every scenario still
+    waiting for its 3차 or 2차 signal ("신규" for the ones that got there this
+    week), then the scenarios that ended this week.
 
     Each stage has a heading followed by one line per stock:
     "▸ <rank> <ticker> (company) — score".  The rank is monospace and the
@@ -80,7 +91,7 @@ def build_scan_message(
     buys = _stage_rows(events, "3차 신호", "매수 성공")
     lines.append("")
     if buys.empty:
-        lines.append("3차 매수 신호 없음")
+        lines.append("3차 신호 · 매수 신호 없음")
     else:
         grades = (
             buys["검토등급"]
@@ -97,42 +108,33 @@ def build_scan_message(
                 errors="coerce",
             ),
         ).sort_values(["_priority", "_score"], ascending=False, na_position="last")
-        lines.append(f"🔴 3차 매수 신호 {len(buys)}건")
+        lines.append(_heading("🔴 3차 신호 · 매수 신호 발생", len(buys)))
         lines += _stock_lines(ordered, with_score=True)
 
-    other_stages = (
-        ("🟠 2차 신호", _stage_rows(events, "2차 신호")),
-        ("🟢 1차 신호", _stage_rows(events, "1차 신호")),
-        ("⚪ 2차 폐기", _stage_rows(events, "2차 폐기")),
-        ("⚪ 3차 실패", _stage_rows(events, "3차 신호", "실패")),
-    )
-    for label, rows in other_stages:
-        if not rows.empty:
-            lines += ["", f"{label} {len(rows)}건", *_stock_lines(rows, with_score=False)]
-
-    states = (
-        active_scenarios["현재상태"]
-        if not active_scenarios.empty and "현재상태" in active_scenarios.columns
-        else pd.Series(dtype=object)
-    )
-    lines += [
-        "",
-        f"계속 관찰 {len(active_scenarios)}건 "
-        f"(3차 대기 {int((states == '3차 신호 대기').sum())} · "
-        f"2차 대기 {int((states == '2차 신호 대기').sum())})",
+    sections = [
+        (label, _waiting_rows(active_scenarios, events, state, entry_stage))
+        for label, state, entry_stage in WAITING_STAGES
     ]
+    sections.append(("종료", _closed_rows(events)))
+    for label, rows in sections:
+        if not rows.empty:
+            lines += ["", _heading(label, len(rows)), *_stock_lines(rows, with_score=False)]
+
+    notes = []
     if failure_count:
-        lines.append(f"데이터 오류 {failure_count}건")
+        notes.append(f"데이터 오류 {failure_count}건")
     if not events.empty and "티커" in events.columns:
         weekend_tickers = sorted(
             {str(ticker) for ticker in events["티커"] if is_weekend_traded(ticker)}
         )
         if weekend_tickers:
             # Crypto keeps trading after the Friday scan, so its week is not over.
-            lines.append(f"※ {escape(', '.join(weekend_tickers))}: 주말 거래 반영 전")
+            notes.append(f"※ {escape(', '.join(weekend_tickers))}: 주말 거래 반영 전")
     for warning in warnings or []:
         if warning:
-            lines.append(f"⚠️ {escape(warning)}")
+            notes.append(f"⚠️ {escape(warning)}")
+    if notes:
+        lines += ["", *notes]
     return "\n".join(lines)
 
 
@@ -202,6 +204,46 @@ def _stage_rows(
     return events[mask]
 
 
+def _heading(label: str, count: int) -> str:
+    """Stage heading with the count in bold at the end, where it stands out."""
+    return f"{label} <b>{count}건</b>"
+
+
+def _waiting_rows(
+    active_scenarios: pd.DataFrame,
+    events: pd.DataFrame,
+    state: str,
+    entry_stage: str,
+) -> pd.DataFrame:
+    """Active scenarios in ``state``: this week's arrivals first, then by rank."""
+    if active_scenarios.empty or not {"현재상태", "티커"} <= set(active_scenarios.columns):
+        return active_scenarios.iloc[0:0]
+    rows = active_scenarios[active_scenarios["현재상태"] == state]
+    entered = _stage_rows(events, entry_stage)
+    is_new = rows["티커"].isin(set(entered["티커"]) if "티커" in entered.columns else set())
+    ranks = (
+        pd.to_numeric(rows["순위"], errors="coerce")
+        if "순위" in rows.columns
+        else pd.Series(float("nan"), index=rows.index)
+    )
+    return rows.assign(
+        _note=is_new.map({True: NEW_LABEL, False: ""}), _new=is_new, _rank=ranks
+    ).sort_values(["_new", "_rank"], ascending=[False, True], na_position="last")
+
+
+def _closed_rows(events: pd.DataFrame) -> pd.DataFrame:
+    """Scenarios that ended this week, each noted with how it ended."""
+    closed = [
+        rows.assign(_note=note)
+        for note, rows in (
+            ("3차 실패", _stage_rows(events, "3차 신호", "실패")),
+            ("2차 폐기", _stage_rows(events, "2차 폐기")),
+        )
+        if not rows.empty
+    ]
+    return pd.concat(closed) if closed else events.iloc[0:0]
+
+
 def _stock_lines(rows: pd.DataFrame, with_score: bool) -> list[str]:
     lines = [
         f"{ITEM_MARKER} {_stock_line(row, with_score)}"
@@ -224,15 +266,18 @@ def _stock_line(row: pd.Series, with_score: bool) -> str:
         parts.append(f"({escape(company)})")
     text = " ".join(parts)
 
+    details = []
     if with_score:
-        details = []
         score = row.get("_score")
         if score is not None and not pd.isna(score):
             details.append(f"{int(float(score) + 0.5)}점")  # 30.5 -> 31
         if row.get("_priority"):
             details.append(PRIORITY_GRADE)
-        if details:
-            text += " — " + " · ".join(details)
+    note = row.get("_note")
+    if isinstance(note, str) and note:
+        details.append(note)
+    if details:
+        text += " — " + " · ".join(details)
     if row.get("신호구분") == "미확인 기간":
         signal_date = pd.to_datetime(row.get("신호일"), errors="coerce")
         if not pd.isna(signal_date):
