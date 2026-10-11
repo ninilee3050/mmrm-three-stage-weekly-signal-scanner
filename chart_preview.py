@@ -117,6 +117,17 @@ PRICE_RANGE_MA_MARGIN = 0.25
 PRICE_SCALE_TICKS = 5
 MIN_TEXT_CONTRAST = 3.5
 SIGNAL_LABEL_MIN_GAP = 30
+SECOND_ROW_BUTTON_Y = 42
+CONTROLS_HELP_TEXT = (
+    "방향키 ←·→ : 이 종목의 이전·다음 기록\n"
+    "방향키 ↑·↓ : 스캐너에 열려 있는 표의 위·아래 종목\n"
+    "마우스 휠 : 확대·축소\n"
+    "드래그 : 좌우 이동\n"
+    "더블클릭 : 선택한 기록 전체 보기\n"
+    "마우스를 차트에 올리면 가격 칸의 날짜와 수치가 그 주의 값으로 바뀝니다."
+)
+SIGNAL_TREND_OPEN_TEXT = "신호 흐름 열기"
+SIGNAL_TREND_CLOSE_TEXT = "신호 흐름 닫기"
 CANDLE_BODY_FILL = ""
 INDICATOR_BAR_WIDTH_RATIO = 0.84
 ZOOM_IN_FACTOR = 0.88
@@ -131,6 +142,13 @@ SIGNAL_STYLES = (
     ("2차", "SecondSignalDate", "#f59e0b"),
     ("3차", "ThirdDecisionDate", "#dc2626"),
 )
+SIGNAL_TONES = ("first", "second", "third")
+HEADER_TONE_COLORS = {
+    **{tone: color for tone, (_, _, color) in zip(SIGNAL_TONES, SIGNAL_STYLES)},
+    "up": CANDLE_UP_COLOR,
+    "down": CANDLE_DOWN_COLOR,
+    "wait": "#f59e0b",
+}
 
 BUY_MARKER_HORIZONS = (
     ("3M", 13, "Return3M", "Return3MStatus"),
@@ -161,18 +179,148 @@ def format_cycle_return(value, status) -> str:
     return "-"
 
 
-def cycle_return_summary(cycle: pd.Series | None) -> str:
-    """Build the compact 3/6/9/12-month result shown in the chart header."""
+def _summary_fields(summary: str) -> dict[str, str]:
+    """Split "이름: 값  |  이름: 값" text; parts without a name are dropped."""
+    fields: dict[str, str] = {}
+    for part in summary.split("|"):
+        name, separator, value = part.partition(":")
+        if separator:
+            fields[name.strip()] = value.strip()
+    return fields
+
+
+def cycle_header_items(
+    cycle: pd.Series | None,
+    chart_strength_summary: str = "",
+    sp500_summary: str = "",
+) -> list[tuple[str, str, str]]:
+    """The record's signal-history row as (caption, value, tone) for the header.
+
+    Tones: "first"/"second"/"third" for the signals, "up"/"down" for good and
+    bad values, "wait" for pending or highlighted ones, "muted" for values
+    that are absent or secondary, "text" for the rest.
+    """
+    def date(column: str) -> str:
+        return _date_text(cycle.get(column)) if cycle is not None else "-"
+
+    outcome = str(cycle.get("Outcome", "전체 차트")) if cycle is not None else "최근 3년"
     if cycle is None:
-        return ""
-    statuses = {str(cycle.get(status_column, "")) for _, _, status_column in RETURN_HORIZONS}
-    if statuses == {"해당 없음"}:
-        # Failed or discarded cycles have no returns to show.
-        return ""
-    return " · ".join(
-        f"{label} {format_cycle_return(cycle.get(value_column), cycle.get(status_column))}"
-        for label, value_column, status_column in RETURN_HORIZONS
-    )
+        outcome_tone = "muted"
+    elif outcome == "매수 성공":
+        outcome_tone = "up"
+    else:
+        outcome_tone = "wait" if "대기" in outcome else "down"
+    strength = _summary_fields(chart_strength_summary or "차트 강도: 해당 없음")
+    score = strength.get("차트 강도", "-")
+    grade = strength.get("검토등급", "-")
+    sp500 = _summary_fields(sp500_summary)
+    sp500_state = sp500.get("S&P500 상태", "-")
+    sp500_tone = "up" if "위" in sp500_state else "down" if "아래" in sp500_state else "muted"
+
+    items = [
+        ("1차신호일", date("FirstSignalDate"), "first"),
+        ("2차신호일", date("SecondSignalDate"), "second"),
+        ("3차판정일", date("ThirdDecisionDate"), "third"),
+        ("결과", outcome, outcome_tone),
+        ("차트 강도", score, "text" if score.endswith("점") else "muted"),
+        ("검토등급", grade, "wait" if grade == "우선검토" else "muted" if grade == "-" else "text"),
+        ("S&P500 상태", sp500_state, sp500_tone),
+    ]
+    for label, value_column, status_column in RETURN_HORIZONS:
+        text = (
+            format_cycle_return(cycle.get(value_column), cycle.get(status_column))
+            if cycle is not None
+            else "-"
+        )
+        tone = "up" if text.startswith("+") else "down" if text[:1] == "-" and len(text) > 1 else "muted"
+        items.append((f"{label.replace('M', '개월')}후 수익률", text, tone))
+    return items
+
+
+def benchmark_header_items(
+    benchmark: pd.DataFrame,
+    cycle: pd.Series | None,
+) -> list[tuple[str, str, str]]:
+    """The S&P 500 on the record's weeks, laid out like ``cycle_header_items``.
+
+    Shows the index close on each signal week, its side of the 50-week line
+    on the latest of them, and what the index returned over the same 3/6/9/12
+    months as the record's buy.
+    """
+    index = _normalized_index(pd.DatetimeIndex(benchmark.index))
+
+    def position(column: str) -> int | None:
+        date = _timestamp(cycle.get(column)) if cycle is not None else None
+        if date is None or benchmark.empty:
+            return None
+        found = int(index.searchsorted(date, side="left"))
+        return found if found < len(index) else None
+
+    def close(found: int | None) -> float:
+        return float(benchmark["Close"].iloc[found]) if found is not None else float("nan")
+
+    positions = [position(column) for _, column, _ in SIGNAL_STYLES]
+    items = [
+        (f"{label} 주 종가", _number(close(found)), tone)
+        for (label, _, _), found, tone in zip(SIGNAL_STYLES, positions, SIGNAL_TONES)
+    ]
+    # The same week the record's own "S&P500 상태" refers to: now for a record
+    # still waiting, otherwise its latest signal.
+    waiting = cycle is not None and "대기" in str(cycle.get("Outcome", ""))
+    latest = next((found for found in reversed(positions) if found is not None), None)
+    if (waiting or cycle is None) and not benchmark.empty:
+        latest = len(index) - 1
+    state, state_tone = "-", "muted"
+    if latest is not None and not pd.isna(benchmark["MA_50"].iloc[latest]):
+        above = close(latest) >= float(benchmark["MA_50"].iloc[latest])
+        state, state_tone = ("50주선 위", "up") if above else ("50주선 아래", "down")
+    items.append(("S&P500 상태", state, state_tone))
+
+    buy = positions[-1]
+    for (label, weeks, _, status_column) in BUY_MARKER_HORIZONS:
+        # Follow the record: no index return where the record has none yet.
+        status = str(cycle.get(status_column, "")) if cycle is not None else ""
+        if status != "확정":
+            text = status if status and status != "nan" else "-"
+        elif buy is None or buy + weeks >= len(index):
+            text = "데이터 없음"
+        else:
+            change = (close(buy + weeks) / close(buy) - 1) * 100 if close(buy) else float("nan")
+            text = f"{change:+.2f}%" if np.isfinite(change) else "데이터 없음"
+        tone = "up" if text.startswith("+") else "down" if text[:1] == "-" and len(text) > 1 else "muted"
+        items.append((f"{label.replace('M', '개월')}후 수익률", text, tone))
+    return items
+
+
+def render_header_items(
+    frame: ttk.Frame,
+    items: list[tuple[str, str, str]],
+    palette: dict[str, str],
+    font_family: str,
+) -> None:
+    """Lay ``cycle_header_items`` out in ``frame`` as a caption row over a value row."""
+    for child in frame.winfo_children():
+        child.destroy()
+    background, text, muted = palette["window"], palette["text"], palette["muted"]
+    tones = {
+        tone: readable_text_color(color, background, text)
+        for tone, color in HEADER_TONE_COLORS.items()
+    }
+    for column, (caption, value, tone) in enumerate(items):
+        # A signal's color marks its caption; elsewhere it marks the value.
+        on_caption = tone in SIGNAL_TONES
+        ttk.Label(
+            frame,
+            text=caption,
+            font=(font_family, 8, "bold" if on_caption else "normal"),
+            foreground=tones[tone] if on_caption else muted,
+        ).grid(row=0, column=column, sticky="w", padx=(0, 24))
+        ttk.Label(
+            frame,
+            text=value,
+            font=(font_family, 10, "normal" if tone == "muted" else "bold"),
+            foreground=text if on_caption else tones.get(tone, muted if tone == "muted" else text),
+        ).grid(row=1, column=column, sticky="w", padx=(0, 24))
 
 
 @dataclass(frozen=True)
@@ -252,11 +400,13 @@ class ChartPreviewWindow(tk.Toplevel):
         on_close=None,
         on_navigate=None,
         theme_mode: str = "light",
+        on_navigate_rows=None,
     ) -> None:
         super().__init__(master)
         self.ui_font_family = configure_ui_fonts(self)
         self._on_close_callback = on_close
         self._on_navigate_callback = on_navigate
+        self._on_navigate_rows_callback = on_navigate_rows
         self.theme_mode = normalize_theme(theme_mode)
         self.palette = theme_palette(self.theme_mode)
         self.configure(background=self.palette["window"])
@@ -268,21 +418,32 @@ class ChartPreviewWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._close)
 
         self.status_var = tk.StringVar(value="차트 데이터를 준비해 주세요.")
-        self.chart_strength_var = tk.StringVar(value="차트 강도: 산정 대기")
-        self.hover_var = tk.StringVar(
-            value=(
-                "방향키 ←·→: 이전·다음 기록  |  휠: 확대·축소  |  "
-                "드래그: 좌우 이동  |  더블클릭: 선택 사이클 전체 보기"
-            )
-        )
+        self._info_items: list[tuple[str, str, str]] = []
         self.header_frame = ttk.Frame(self)
         self.header_frame.pack(fill="x")
         ttk.Label(
             self.header_frame,
             textvariable=self.status_var,
-            font=(self.ui_font_family, 11, "bold"),
-            padding=(10, 7, 485, 2),
+            font=(self.ui_font_family, 12, "bold"),
+            padding=(10, 7, 485, 4),
         ).pack(side="left", fill="x", expand=True)
+        # Opens and closes the signal trend window beside this one.  It sits
+        # under the S&P 500 button, beside the two summary lines, so it does not
+        # take room from the header text.
+        self.signal_trend_button = ttk.Button(
+            self,
+            text=SIGNAL_TREND_OPEN_TEXT,
+            command=self._toggle_signal_trend,
+        )
+        self.signal_trend_window = None
+        # The controls are explained on hover instead of in a line of their own.
+        from gui.tooltips import HoverTooltip, attach_widget_tooltip
+
+        self.controls_help = ttk.Label(
+            self.header_frame, text="조작법 ⓘ", foreground=self.palette["muted"]
+        )
+        self.hover_tooltip = HoverTooltip(self, self.ui_font_family)
+        attach_widget_tooltip(self.hover_tooltip, self.controls_help, CONTROLS_HELP_TEXT)
         self.previous_button = ttk.Button(
             self.header_frame,
             text="← 이전",
@@ -308,17 +469,10 @@ class ChartPreviewWindow(tk.Toplevel):
             command=self._toggle_benchmark,
         )
         self._position_header_controls()
-        ttk.Label(
-            self,
-            textvariable=self.chart_strength_var,
-            font=(self.ui_font_family, 9, "bold"),
-            padding=(10, 0, 10, 2),
-        ).pack(fill="x")
-        ttk.Label(
-            self,
-            textvariable=self.hover_var,
-            padding=(10, 2, 10, 7),
-        ).pack(fill="x")
+        # The record's row from the signal history table, as captioned values.
+        self.info_frame = ttk.Frame(self, padding=(10, 0, 10, 8))
+        self.info_frame.pack(fill="x")
+        self.signal_trend_button.lift()
 
         self.chart_area = ttk.Frame(self)
         self.chart_area.pack(fill="both", expand=True)
@@ -339,6 +493,16 @@ class ChartPreviewWindow(tk.Toplevel):
             cursor="crosshair",
         )
         self.comparison_canvas.pack(fill="both", expand=True)
+        # The S&P 500's own header, placed over the empty space above its chart.
+        self.benchmark_header = ttk.Frame(self)
+        ttk.Label(
+            self.benchmark_header,
+            text=f"{BENCHMARK_NAME} ({BENCHMARK_TICKER}) · 같은 주의 값",
+            font=(self.ui_font_family, 12, "bold"),
+            padding=(10, 7, 10, 4),
+        ).pack(anchor="w")
+        self.benchmark_info_frame = ttk.Frame(self.benchmark_header, padding=(10, 0, 10, 8))
+        self.benchmark_info_frame.pack(fill="x")
         self.panel_title_font = tkfont.Font(
             root=self,
             family=self.ui_font_family,
@@ -369,6 +533,8 @@ class ChartPreviewWindow(tk.Toplevel):
         self.comparison_canvas.bind("<Double-Button-1>", self._reset_view)
         self.bind("<Left>", lambda _event: self._request_navigation(-1))
         self.bind("<Right>", lambda _event: self._request_navigation(1))
+        self.bind("<Up>", lambda _event: self._request_row_navigation(-1))
+        self.bind("<Down>", lambda _event: self._request_row_navigation(1))
 
         self.ticker = ""
         self.company = ""
@@ -398,6 +564,65 @@ class ChartPreviewWindow(tk.Toplevel):
         self.next_button.place_configure(x=right - 165, **common)
         self.navigation_label.place_configure(x=right - 250, y=10, anchor="ne", relx=relx)
         self.previous_button.place_configure(x=right - 330, **common)
+        self.controls_help.place_configure(x=right - 432, y=10, anchor="ne", relx=relx)
+        self.signal_trend_button.place_configure(
+            x=right, y=SECOND_ROW_BUTTON_Y, anchor="ne", relx=relx
+        )
+
+    def _toggle_signal_trend(self) -> None:
+        from signal_trend import SignalTrendWindow
+
+        window = self.signal_trend_window
+        if window is not None and window.winfo_exists():
+            window.destroy()
+            self._signal_trend_closed()
+            return
+        window = self.signal_trend_window = SignalTrendWindow(
+            self,
+            self.theme_mode,
+            on_navigate=self._request_navigation,
+            on_navigate_rows=self.move_scanner_row,
+            on_close=self._signal_trend_closed,
+        )
+        self.signal_trend_button.configure(text=SIGNAL_TREND_CLOSE_TEXT)
+        self._show_in_signal_trend(window)
+        self._place_beside(window)
+        window.deiconify()
+        window.lift()
+        window.focus_force()
+
+    def _signal_trend_closed(self) -> None:
+        self.signal_trend_window = None
+        self.signal_trend_button.configure(text=SIGNAL_TREND_OPEN_TEXT)
+
+    def _place_beside(self, window: tk.Toplevel) -> None:
+        """Put ``window`` at this window's right edge, kept on the screen."""
+        self.update_idletasks()
+        window.update_idletasks()
+        border = self.winfo_rootx() - self.winfo_x()
+        x = self.winfo_rootx() + self.winfo_width() + border
+        # The virtual desktop spans every monitor, not only the primary one.
+        desktop_left = self.winfo_vrootx()
+        desktop_right = desktop_left + self.winfo_vrootwidth()
+        x = max(desktop_left, min(x, desktop_right - window.winfo_width() - 2 * border))
+        window.geometry(f"+{x}+{self.winfo_y()}")
+
+    def _refresh_signal_trend(self) -> None:
+        """Keep an open trend window on the record the chart is showing."""
+        window = getattr(self, "signal_trend_window", None)
+        if window is not None and window.winfo_exists():
+            self._show_in_signal_trend(window)
+
+    def _show_in_signal_trend(self, window) -> None:
+        window.show(
+            self.ticker,
+            self.data,
+            self.cycle,
+            self.navigation_index,
+            self.navigation_total,
+            heading=self.status_var.get(),
+            header_items=self._info_items,
+        )
 
     def _request_navigation(self, direction: int) -> str:
         if direction < 0 and str(self.previous_button.cget("state")) == "disabled":
@@ -407,6 +632,16 @@ class ChartPreviewWindow(tk.Toplevel):
         if self._on_navigate_callback is not None:
             self._on_navigate_callback(-1 if direction < 0 else 1)
         return "break"
+
+    def _request_row_navigation(self, direction: int) -> str:
+        self.move_scanner_row(direction)
+        return "break"
+
+    def move_scanner_row(self, direction: int) -> bool:
+        """Go to the stock above or below in the open scanner table; True if it moved."""
+        if self._on_navigate_rows_callback is None:
+            return False
+        return bool(self._on_navigate_rows_callback(-1 if direction < 0 else 1))
 
     def _set_navigation_state(self, index: int | None, total: int) -> None:
         self.navigation_index = index
@@ -431,6 +666,25 @@ class ChartPreviewWindow(tk.Toplevel):
         self.canvas.configure(background=self.palette["chart_background"])
         self.comparison_canvas.configure(background=self.palette["chart_background"])
         self._schedule_redraw()
+        self._render_info()
+        self.controls_help.configure(foreground=self.palette["muted"])
+        window = getattr(self, "signal_trend_window", None)
+        if window is not None and window.winfo_exists():
+            window.set_theme(self.theme_mode)
+
+    def _render_info(self) -> None:
+        render_header_items(self.info_frame, self._info_items, self.palette, self.ui_font_family)
+        self._render_benchmark_header()
+
+    def _render_benchmark_header(self) -> None:
+        if not self.benchmark_visible:
+            return
+        render_header_items(
+            self.benchmark_info_frame,
+            benchmark_header_items(self.benchmark_data, self.cycle),
+            self.palette,
+            self.ui_font_family,
+        )
 
     def _toggle_benchmark(self) -> None:
         if self.benchmark_visible and not self.benchmark_data.empty:
@@ -474,9 +728,15 @@ class ChartPreviewWindow(tk.Toplevel):
             padx=(4, 0),
         )
         self.benchmark_button.configure(text="S&P 500 비교 닫기")
+        self.benchmark_header.place(
+            relx=1.0, x=-self._primary_width_before_benchmark, y=0, anchor="nw"
+        )
+        self.benchmark_header.lift()
+        self._render_benchmark_header()
 
     def _hide_benchmark(self) -> None:
         self.benchmark_visible = False
+        self.benchmark_header.place_forget()
         self.comparison_frame.pack_forget()
         self.comparison_frame.pack_propagate(True)
         self.benchmark_button.configure(text="S&P 500 비교 열기", state="normal")
@@ -564,6 +824,7 @@ class ChartPreviewWindow(tk.Toplevel):
         )
         self.benchmark_button.configure(text="S&P 500 비교 닫기", state="normal")
         self._schedule_redraw()
+        self._render_benchmark_header()
 
     def _finish_benchmark_error(self, details: str) -> None:
         if not self._window_alive():
@@ -609,23 +870,10 @@ class ChartPreviewWindow(tk.Toplevel):
         self.initial_view = (self.view_start, self.view_end)
         self._drag_origin = None
 
-        first = _date_text(cycle.get("FirstSignalDate")) if cycle is not None else "-"
-        second = _date_text(cycle.get("SecondSignalDate")) if cycle is not None else "-"
-        third = _date_text(cycle.get("ThirdDecisionDate")) if cycle is not None else "-"
-        outcome = str(cycle.get("Outcome", "전체 차트")) if cycle is not None else "최근 3년"
-        returns = cycle_return_summary(cycle)
         name = f" · {company}" if company and company.upper() != self.ticker else ""
-        if rank_text:
-            name += f" · {rank_text}"
-        return_suffix = f"  |  {returns}" if returns else ""
-        self.status_var.set(
-            f"{self.ticker}{name}  |  1차 {first}  ·  2차 {second}  ·  "
-            f"3차 {third}  |  {outcome}{return_suffix}"
-        )
-        summary_parts = [chart_strength_summary or "차트 강도: 해당 없음"]
-        if sp500_summary:
-            summary_parts.append(sp500_summary)
-        self.chart_strength_var.set("  |  ".join(summary_parts))
+        rank = f"{rank_text} · " if rank_text else ""
+        self.status_var.set(f"{rank}{self.ticker}{name}")
+        self._info_items = cycle_header_items(cycle, chart_strength_summary, sp500_summary)
         if sp500_data is not None and not sp500_data.empty:
             benchmark = sp500_data.loc[:, CHART_COLUMNS].copy()
             benchmark.index = _normalized_index(pd.DatetimeIndex(benchmark.index))
@@ -641,11 +889,13 @@ class ChartPreviewWindow(tk.Toplevel):
             self.benchmark_data = pd.DataFrame()
             self.comparison_status_var.set("S&P 500 데이터를 준비해 주세요.")
         self._set_navigation_state(navigation_index, navigation_total)
+        self._render_info()  # after the S&P 500 series above is in place
         self.title(f"{self.ticker} · MMRM 시나리오 차트 미리보기")
         self.deiconify()
         self.lift()
         self.focus_force()
         self._schedule_redraw()
+        self._refresh_signal_trend()
 
     def _close(self) -> None:
         callback = self._on_close_callback
@@ -1388,7 +1638,6 @@ class ChartPreviewWindow(tk.Toplevel):
         self._draw_panel_hover_values(panels, row)
         self._draw_crosshair_date(x, panels[-1].bottom, date)
         self._draw_comparison_crosshair(pd.Timestamp(self.data.index[position]))
-        self.hover_var.set(f"{date}  |  십자선 수치는 각 보조지표 제목 옆에 표시됩니다.")
 
     def _on_comparison_motion(self, event) -> None:
         if not self.benchmark_visible or self.benchmark_data.empty or self._drag_origin is not None:
@@ -1548,7 +1797,10 @@ class ChartPreviewWindow(tk.Toplevel):
     def _draw_panel_hover_values(self, panels: list[Panel], row: pd.Series) -> None:
         self.canvas.delete("panel_hover_value")
         ma_styles = moving_average_styles(self.theme_mode)
+        # The week the values belong to: under the crosshair, or the rightmost one.
+        week = [] if pd.isna(row.name) else [("", _date_text(row.name), self.palette["text"], False)]
         price_values = [
+            *week,
             ("O", row["Open"], self.palette["muted"], False),
             ("H", row["High"], CANDLE_UP_COLOR, False),
             ("L", row["Low"], CANDLE_DOWN_COLOR, False),
@@ -1602,7 +1854,10 @@ class ChartPreviewWindow(tk.Toplevel):
         for panel, tag_prefix, values in specifications:
             x = left + 16 + self.panel_title_font.measure(panel.name)
             for label, value, color, compact in values:
-                formatted = _compact_number(value) if compact else _number(value)
+                if isinstance(value, str):
+                    formatted = value
+                else:
+                    formatted = _compact_number(value) if compact else _number(value)
                 text = f"{label} {formatted}".strip()
                 self.canvas.create_text(
                     x,
@@ -1641,12 +1896,7 @@ class ChartPreviewWindow(tk.Toplevel):
     ) -> None:
         if visible.empty:
             return
-        row = visible.iloc[-1]
-        date = visible.index[-1].strftime("%Y-%m-%d")
-        self._draw_panel_hover_values(panels, row)
-        self.hover_var.set(
-            f"{date}  |  현재 화면의 가장 오른쪽 주봉 수치"
-        )
+        self._draw_panel_hover_values(panels, visible.iloc[-1])
 
     def _on_mousewheel(self, event) -> None:
         if self.data.empty or event.delta == 0:

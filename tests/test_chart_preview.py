@@ -29,7 +29,6 @@ from chart_preview import (
     ZOOM_OUT_FACTOR,
     ChartPreviewWindow,
     comparison_view_indices,
-    cycle_return_summary,
     cycle_view_dates,
     cycle_view_indices,
     expanded_comparison_width,
@@ -118,25 +117,12 @@ def test_synchronized_crosshair_maps_each_chart_close_to_its_own_price_scale() -
     assert price_crosshair_y(data, panel, float("nan")) is None
 
 
-def test_cycle_return_summary_uses_stored_returns_and_statuses() -> None:
-    cycle = pd.Series(
-        {
-            "Return3M": 12.345,
-            "Return3MStatus": "확정",
-            "Return6M": -4.5,
-            "Return6MStatus": "확정",
-            "Return9M": float("nan"),
-            "Return9MStatus": "진행 중",
-            "Return12M": float("nan"),
-            "Return12MStatus": "데이터 없음",
-        }
-    )
-
-    assert cycle_return_summary(cycle) == (
-        "3M +12.35% · 6M -4.50% · 9M 진행 중 · 12M 데이터 없음"
-    )
+def test_cycle_return_uses_the_stored_value_or_its_status() -> None:
+    assert format_cycle_return(12.345, "확정") == "+12.35%"
+    assert format_cycle_return(-4.5, "확정") == "-4.50%"
+    assert format_cycle_return(float("nan"), "진행 중") == "진행 중"
     assert format_cycle_return(float("nan"), "해당 없음") == "해당 없음"
-    assert cycle_return_summary(None) == ""
+    assert format_cycle_return(None, None) == "-"
 
 
 def test_navigation_state_disables_only_the_unavailable_direction() -> None:
@@ -382,16 +368,157 @@ def test_hover_label_colors_are_made_readable_on_dark_panels() -> None:
     assert readable_text_color("#ef4444", "#ffffff", "#111827") == "#ef4444"
 
 
-def test_header_hides_returns_for_cycles_without_a_buy() -> None:
+def test_header_items_mirror_the_signal_history_row() -> None:
+    from chart_preview import cycle_header_items
+
     cycle = pd.Series(
         {
-            column: value
-            for label in ("3M", "6M", "9M", "12M")
-            for column, value in (
-                (f"Return{label}", float("nan")),
-                (f"Return{label}Status", "해당 없음"),
-            )
+            "FirstSignalDate": pd.Timestamp("2026-07-13"),
+            "SecondSignalDate": pd.Timestamp("2026-08-31"),
+            "ThirdDecisionDate": pd.Timestamp("2026-10-05"),
+            "Outcome": "매수 성공",
+            "Return3M": 12.345,
+            "Return3MStatus": "확정",
+            "Return6M": -4.0,
+            "Return6MStatus": "확정",
+            "Return9M": None,
+            "Return9MStatus": "진행 중",
+            "Return12M": None,
+            "Return12MStatus": "진행 중",
         }
     )
 
-    assert cycle_return_summary(cycle) == ""
+    items = cycle_header_items(
+        cycle,
+        "차트 강도: 22.9점  |  검토등급: 우선검토",
+        "S&P500 상태: 50주선 위  |  2026-10-05 종가 7,811.54 · 50주선 7,174.88",
+    )
+
+    assert items == [
+        ("1차신호일", "2026-07-13", "first"),
+        ("2차신호일", "2026-08-31", "second"),
+        ("3차판정일", "2026-10-05", "third"),
+        ("결과", "매수 성공", "up"),
+        ("차트 강도", "22.9점", "text"),
+        ("검토등급", "우선검토", "wait"),
+        ("S&P500 상태", "50주선 위", "up"),
+        ("3개월후 수익률", "+12.35%", "up"),
+        ("6개월후 수익률", "-4.00%", "down"),
+        ("9개월후 수익률", "진행 중", "muted"),
+        ("12개월후 수익률", "진행 중", "muted"),
+    ]
+
+
+def test_header_items_for_records_without_a_buy() -> None:
+    from chart_preview import cycle_header_items
+
+    waiting = pd.Series(
+        {"FirstSignalDate": pd.Timestamp("2026-07-13"), "Outcome": "2차 신호 대기"}
+    )
+
+    items = dict((caption, (value, tone)) for caption, value, tone in cycle_header_items(
+        waiting, "차트 강도: 산정 대기", "S&P500 상태: 50주선 아래"
+    ))
+    whole_chart = cycle_header_items(None)
+
+    assert items["2차신호일"] == ("-", "second")
+    assert items["결과"] == ("2차 신호 대기", "wait")
+    assert items["차트 강도"] == ("산정 대기", "muted")
+    assert items["검토등급"] == ("-", "muted")
+    assert items["S&P500 상태"] == ("50주선 아래", "down")
+    assert items["3개월후 수익률"] == ("-", "muted")
+    assert whole_chart[3] == ("결과", "최근 3년", "muted")
+    assert whole_chart[0] == ("1차신호일", "-", "first")
+
+
+def test_benchmark_header_shows_the_index_on_the_records_weeks() -> None:
+    from chart_preview import benchmark_header_items
+
+    index = pd.date_range("2025-01-06", periods=60, freq="W-MON")
+    benchmark = pd.DataFrame(
+        {"Close": [1000.0 + 10 * week for week in range(60)], "MA_50": 1100.0}, index=index
+    )
+    cycle = pd.Series(
+        {
+            "FirstSignalDate": index[10],
+            "SecondSignalDate": index[14],
+            "ThirdDecisionDate": index[20],
+            "Outcome": "매수 성공",
+            "Return3MStatus": "확정",
+            "Return6MStatus": "확정",
+            "Return9MStatus": "진행 중",
+            "Return12MStatus": "진행 중",
+        }
+    )
+
+    items = benchmark_header_items(benchmark, cycle)
+
+    assert items == [
+        ("1차 주 종가", "1,100", "first"),
+        ("2차 주 종가", "1,140", "second"),
+        ("3차 주 종가", "1,200", "third"),
+        ("S&P500 상태", "50주선 위", "up"),
+        ("3개월후 수익률", "+10.83%", "up"),  # 1,330 over 1,200
+        ("6개월후 수익률", "+21.67%", "up"),
+        ("9개월후 수익률", "진행 중", "muted"),
+        ("12개월후 수익률", "진행 중", "muted"),
+    ]
+
+
+def test_benchmark_header_without_a_buy_or_data() -> None:
+    from chart_preview import benchmark_header_items
+
+    index = pd.date_range("2025-01-06", periods=30, freq="W-MON")
+    benchmark = pd.DataFrame({"Close": 900.0, "MA_50": 1000.0}, index=index)
+    waiting = pd.Series(
+        {
+            "FirstSignalDate": index[10],
+            "Outcome": "2차 신호 대기",
+            "Return3MStatus": "해당 없음",
+        }
+    )
+
+    items = dict(
+        (caption, (value, tone)) for caption, value, tone in benchmark_header_items(benchmark, waiting)
+    )
+    empty = benchmark_header_items(pd.DataFrame(columns=["Close", "MA_50"]), waiting)
+
+    assert items["1차 주 종가"] == ("900.0", "first")
+    assert items["2차 주 종가"] == ("-", "second")
+    assert items["S&P500 상태"] == ("50주선 아래", "down")
+    assert items["3개월후 수익률"] == ("해당 없음", "muted")
+    assert items["6개월후 수익률"] == ("-", "muted")
+    assert [value for _, value, _ in empty[:4]] == ["-", "-", "-", "-"]
+
+
+def test_benchmark_state_uses_the_same_week_as_the_records_own() -> None:
+    from chart_preview import benchmark_header_items
+
+    index = pd.date_range("2025-01-06", periods=30, freq="W-MON")
+    # Below the 50-week line on the signal week, above it by the latest week.
+    benchmark = pd.DataFrame({"Close": 900.0, "MA_50": 1000.0}, index=index)
+    benchmark.loc[index[-1], "Close"] = 1100.0
+    dates = {"FirstSignalDate": index[10], "SecondSignalDate": index[12]}
+
+    def state(outcome: str) -> tuple[str, str]:
+        items = benchmark_header_items(benchmark, pd.Series({**dates, "Outcome": outcome}))
+        return next((value, tone) for caption, value, tone in items if caption == "S&P500 상태")
+
+    # A waiting record is judged on the market now, a finished one on its last signal.
+    assert state("3차 신호 대기") == ("50주선 위", "up")
+    assert state("2차 폐기") == ("50주선 아래", "down")
+
+
+def test_benchmark_return_without_a_usable_close_is_not_a_number() -> None:
+    from chart_preview import benchmark_header_items
+
+    index = pd.date_range("2025-01-06", periods=40, freq="W-MON")
+    benchmark = pd.DataFrame({"Close": 1000.0, "MA_50": 900.0}, index=index)
+    benchmark.loc[index[33], "Close"] = float("nan")
+    cycle = pd.Series(
+        {"ThirdDecisionDate": index[20], "Outcome": "매수 성공", "Return3MStatus": "확정"}
+    )
+
+    items = dict((caption, value) for caption, value, _ in benchmark_header_items(benchmark, cycle))
+
+    assert items["3개월후 수익률"] == "데이터 없음"
