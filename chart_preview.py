@@ -118,6 +118,8 @@ PRICE_SCALE_TICKS = 5
 MIN_TEXT_CONTRAST = 3.5
 SIGNAL_LABEL_MIN_GAP = 30
 SECOND_ROW_BUTTON_Y = 42
+SIGNAL_TREND_OPEN_TEXT = "신호 흐름 열기"
+SIGNAL_TREND_CLOSE_TEXT = "신호 흐름 닫기"
 CANDLE_BODY_FILL = ""
 INDICATOR_BAR_WIDTH_RATIO = 0.84
 ZOOM_IN_FACTOR = 0.88
@@ -284,13 +286,13 @@ class ChartPreviewWindow(tk.Toplevel):
             font=(self.ui_font_family, 11, "bold"),
             padding=(10, 7, 485, 2),
         ).pack(side="left", fill="x", expand=True)
-        # Temporary entry point for the experimental signal trend view.  It sits
+        # Opens and closes the signal trend window beside this one.  It sits
         # under the S&P 500 button, beside the two summary lines, so it does not
         # take room from the header text.
         self.signal_trend_button = ttk.Button(
             self,
-            text="신호 흐름 (임시)",
-            command=self._open_signal_trend,
+            text=SIGNAL_TREND_OPEN_TEXT,
+            command=self._toggle_signal_trend,
         )
         self.signal_trend_window = None
         self.previous_button = ttk.Button(
@@ -413,18 +415,39 @@ class ChartPreviewWindow(tk.Toplevel):
             x=right, y=SECOND_ROW_BUTTON_Y, anchor="ne", relx=relx
         )
 
-    def _open_signal_trend(self) -> None:
+    def _toggle_signal_trend(self) -> None:
         from signal_trend import SignalTrendWindow
 
         window = self.signal_trend_window
-        if window is None or not window.winfo_exists():
-            window = self.signal_trend_window = SignalTrendWindow(
-                self, self.theme_mode, on_navigate=self._request_navigation
-            )
+        if window is not None and window.winfo_exists():
+            window.destroy()
+            self._signal_trend_closed()
+            return
+        window = self.signal_trend_window = SignalTrendWindow(
+            self,
+            self.theme_mode,
+            on_navigate=self._request_navigation,
+            on_close=self._signal_trend_closed,
+        )
+        self.signal_trend_button.configure(text=SIGNAL_TREND_CLOSE_TEXT)
         self._show_in_signal_trend(window)
+        self._place_beside(window)
         window.deiconify()
         window.lift()
         window.focus_force()
+
+    def _signal_trend_closed(self) -> None:
+        self.signal_trend_window = None
+        self.signal_trend_button.configure(text=SIGNAL_TREND_OPEN_TEXT)
+
+    def _place_beside(self, window: tk.Toplevel) -> None:
+        """Put ``window`` at this window's right edge, kept on the screen."""
+        self.update_idletasks()
+        window.update_idletasks()
+        border = self.winfo_rootx() - self.winfo_x()
+        x = self.winfo_rootx() + self.winfo_width() + border
+        x = max(0, min(x, self.winfo_screenwidth() - window.winfo_width() - 2 * border))
+        window.geometry(f"+{x}+{self.winfo_y()}")
 
     def _refresh_signal_trend(self) -> None:
         """Keep an open trend window on the record the chart is showing."""

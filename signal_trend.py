@@ -1,9 +1,8 @@
-"""Signal-point trend view (experimental).
+"""Signal-point trend view.
 
 Takes one cycle's 1차/2차/3차 weeks and compares how the close, volume,
-momentum, MACD, RSI and MFI moved between them, plus the average of those moves.  Opened from
-a temporary button in the chart preview; kept in its own module until its
-final place in the UI is decided.
+momentum, MACD, RSI and MFI moved between them, plus the average of those moves.  Opened in
+its own window from a button in the chart preview.
 """
 
 from __future__ import annotations
@@ -175,14 +174,22 @@ def week_line_xs(xs: list[float], weeks: list[int], min_spacing: float = WEEK_LI
 class SignalTrendWindow(tk.Toplevel):
     """Signal-point trend of one record, with the S&P 500 beside it on request."""
 
-    def __init__(self, master: tk.Misc, theme_mode: str = "light", on_navigate=None) -> None:
+    def __init__(
+        self,
+        master: tk.Misc,
+        theme_mode: str = "light",
+        on_navigate=None,
+        on_close=None,
+    ) -> None:
         super().__init__(master)
         self.ui_font_family = configure_ui_fonts(self)
         self._on_navigate_callback = on_navigate
+        self._on_close_callback = on_close
         self._navigating = False
         self.theme_mode = normalize_theme(theme_mode)
         self.configure(background=theme_palette(self.theme_mode)["window"])
-        self.title("신호 지점 흐름 (임시)")
+        self.title("신호 지점 흐름")
+        self.protocol("WM_DELETE_WINDOW", self._close)
         self.geometry("1240x700")
         self.minsize(820, 560)
 
@@ -260,7 +267,7 @@ class SignalTrendWindow(tk.Toplevel):
             f"{label} {row['Date']:%Y-%m-%d}" for label, row in self.points.iterrows()
         )
         self.status_var.set(f"{ticker}  |  {dates or '신호 지점 없음'}")
-        self.title(f"{ticker} · 신호 지점 흐름 (임시)")
+        self.title(f"{ticker} · 신호 지점 흐름")
         self._ensure_benchmark()
         self._show_charts()
         if self._navigating:
@@ -268,6 +275,11 @@ class SignalTrendWindow(tk.Toplevel):
             self._navigating = False
             self.lift()
             self.focus_force()
+
+    def _close(self) -> None:
+        self.destroy()
+        if self._on_close_callback is not None:
+            self._on_close_callback()
 
     def _request_navigation(self, direction: int) -> str:
         button = self.previous_button if direction < 0 else self.next_button
