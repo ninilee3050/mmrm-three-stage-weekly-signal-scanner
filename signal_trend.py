@@ -14,7 +14,7 @@ from tkinter import ttk
 import numpy as np
 import pandas as pd
 
-from chart_preview import render_header_items
+from chart_preview import benchmark_header_items, render_header_items
 from market_context import SP500_NAME, SP500_TICKER, load_sp500_context
 from ui_theme import configure_ui_fonts, normalize_theme, theme_palette
 
@@ -238,16 +238,19 @@ class SignalTrendWindow(tk.Toplevel):
         self.benchmark_header.pack_propagate(False)
         ttk.Label(
             self.benchmark_header,
-            text=f"{BENCHMARK_NAME} ({BENCHMARK_TICKER})  |  같은 주의 값",
-            font=(self.ui_font_family, 11, "bold"),
+            text=f"{BENCHMARK_NAME} ({BENCHMARK_TICKER}) · 같은 주의 값",
+            font=(self.ui_font_family, 12, "bold"),
             padding=(10, 7, 10, 4),
-        ).pack(side="left")
+        ).pack(anchor="w")
+        self.benchmark_info_frame = ttk.Frame(self.benchmark_header, padding=(10, 0, 10, 8))
+        self.benchmark_info_frame.pack(fill="x")
         self.benchmark_canvas = TrendCanvas(
             self.benchmark_frame, self.ui_font_family, self.theme_mode
         )
         self.benchmark_canvas.pack(fill="both", expand=True)
 
         self.ticker = ""
+        self.cycle: pd.Series | None = None
         self.data = pd.DataFrame()
         self.points = signal_points(self.data, None)
         self.benchmark_data = pd.DataFrame()
@@ -269,11 +272,11 @@ class SignalTrendWindow(tk.Toplevel):
         """Show one record; ``heading`` and ``header_items`` fill the header."""
         self._set_navigation_state(navigation_index, navigation_total)
         self.ticker = ticker
+        self.cycle = cycle
         self.data = data
         self.points = signal_points(data, cycle)
         self.status_var.set(heading or ticker)
         self.header_items = list(header_items or [])
-        self._render_header()
         self.title(f"{ticker} · 신호 지점 흐름")
         self._ensure_benchmark()
         self._show_charts()
@@ -284,9 +287,15 @@ class SignalTrendWindow(tk.Toplevel):
             self.focus_force()
 
     def _render_header(self) -> None:
-        render_header_items(
-            self.info_frame, self.header_items, theme_palette(self.theme_mode), self.ui_font_family
-        )
+        palette = theme_palette(self.theme_mode)
+        render_header_items(self.info_frame, self.header_items, palette, self.ui_font_family)
+        if self.benchmark_visible:
+            render_header_items(
+                self.benchmark_info_frame,
+                benchmark_header_items(self.benchmark_data, self.cycle),
+                palette,
+                self.ui_font_family,
+            )
 
     def _close(self) -> None:
         self.destroy()
@@ -391,6 +400,7 @@ class SignalTrendWindow(tk.Toplevel):
         record's.  Side by side, each chart shows its own average and the two
         share one vertical scale, so the same slope means the same move.
         """
+        self._render_header()
         if not self.benchmark_visible:
             overlay = None
             if not self.benchmark_data.empty and not self.points.empty:

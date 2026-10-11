@@ -250,6 +250,55 @@ def cycle_header_items(
     return items
 
 
+def benchmark_header_items(
+    benchmark: pd.DataFrame,
+    cycle: pd.Series | None,
+) -> list[tuple[str, str, str]]:
+    """The S&P 500 on the record's weeks, laid out like ``cycle_header_items``.
+
+    Shows the index close on each signal week, its side of the 50-week line
+    on the latest of them, and what the index returned over the same 3/6/9/12
+    months as the record's buy.
+    """
+    index = _normalized_index(pd.DatetimeIndex(benchmark.index))
+
+    def position(column: str) -> int | None:
+        date = _timestamp(cycle.get(column)) if cycle is not None else None
+        if date is None or benchmark.empty:
+            return None
+        found = int(index.searchsorted(date, side="left"))
+        return found if found < len(index) else None
+
+    def close(found: int | None) -> float:
+        return float(benchmark["Close"].iloc[found]) if found is not None else float("nan")
+
+    positions = [position(column) for _, column, _ in SIGNAL_STYLES]
+    items = [
+        (f"{label} 주 종가", _number(close(found)), tone)
+        for (label, _, _), found, tone in zip(SIGNAL_STYLES, positions, SIGNAL_TONES)
+    ]
+    latest = next((found for found in reversed(positions) if found is not None), None)
+    state, state_tone = "-", "muted"
+    if latest is not None and not pd.isna(benchmark["MA_50"].iloc[latest]):
+        above = close(latest) >= float(benchmark["MA_50"].iloc[latest])
+        state, state_tone = ("50주선 위", "up") if above else ("50주선 아래", "down")
+    items.append(("S&P500 상태", state, state_tone))
+
+    buy = positions[-1]
+    for (label, weeks, _, status_column) in BUY_MARKER_HORIZONS:
+        # Follow the record: no index return where the record has none yet.
+        status = str(cycle.get(status_column, "")) if cycle is not None else ""
+        if status != "확정":
+            text = status if status and status != "nan" else "-"
+        elif buy is None or buy + weeks >= len(index) or not close(buy):
+            text = "데이터 없음"
+        else:
+            text = f"{(close(buy + weeks) / close(buy) - 1) * 100:+.2f}%"
+        tone = "up" if text.startswith("+") else "down" if text[:1] == "-" and len(text) > 1 else "muted"
+        items.append((f"{label.replace('M', '개월')}후 수익률", text, tone))
+    return items
+
+
 def render_header_items(
     frame: ttk.Frame,
     items: list[tuple[str, str, str]],
@@ -449,6 +498,16 @@ class ChartPreviewWindow(tk.Toplevel):
             cursor="crosshair",
         )
         self.comparison_canvas.pack(fill="both", expand=True)
+        # The S&P 500's own header, placed over the empty space above its chart.
+        self.benchmark_header = ttk.Frame(self)
+        ttk.Label(
+            self.benchmark_header,
+            text=f"{BENCHMARK_NAME} ({BENCHMARK_TICKER}) · 같은 주의 값",
+            font=(self.ui_font_family, 12, "bold"),
+            padding=(10, 7, 10, 4),
+        ).pack(anchor="w")
+        self.benchmark_info_frame = ttk.Frame(self.benchmark_header, padding=(10, 0, 10, 8))
+        self.benchmark_info_frame.pack(fill="x")
         self.panel_title_font = tkfont.Font(
             root=self,
             family=self.ui_font_family,
@@ -603,6 +662,17 @@ class ChartPreviewWindow(tk.Toplevel):
 
     def _render_info(self) -> None:
         render_header_items(self.info_frame, self._info_items, self.palette, self.ui_font_family)
+        self._render_benchmark_header()
+
+    def _render_benchmark_header(self) -> None:
+        if not self.benchmark_visible:
+            return
+        render_header_items(
+            self.benchmark_info_frame,
+            benchmark_header_items(self.benchmark_data, self.cycle),
+            self.palette,
+            self.ui_font_family,
+        )
 
     def _toggle_benchmark(self) -> None:
         if self.benchmark_visible and not self.benchmark_data.empty:
@@ -646,9 +716,15 @@ class ChartPreviewWindow(tk.Toplevel):
             padx=(4, 0),
         )
         self.benchmark_button.configure(text="S&P 500 비교 닫기")
+        self.benchmark_header.place(
+            relx=1.0, x=-self._primary_width_before_benchmark, y=0, anchor="nw"
+        )
+        self.benchmark_header.lift()
+        self._render_benchmark_header()
 
     def _hide_benchmark(self) -> None:
         self.benchmark_visible = False
+        self.benchmark_header.place_forget()
         self.comparison_frame.pack_forget()
         self.comparison_frame.pack_propagate(True)
         self.benchmark_button.configure(text="S&P 500 비교 열기", state="normal")
@@ -736,6 +812,7 @@ class ChartPreviewWindow(tk.Toplevel):
         )
         self.benchmark_button.configure(text="S&P 500 비교 닫기", state="normal")
         self._schedule_redraw()
+        self._render_benchmark_header()
 
     def _finish_benchmark_error(self, details: str) -> None:
         if not self._window_alive():
@@ -785,7 +862,6 @@ class ChartPreviewWindow(tk.Toplevel):
         rank = f"{rank_text} · " if rank_text else ""
         self.status_var.set(f"{rank}{self.ticker}{name}")
         self._info_items = cycle_header_items(cycle, chart_strength_summary, sp500_summary)
-        self._render_info()
         if sp500_data is not None and not sp500_data.empty:
             benchmark = sp500_data.loc[:, CHART_COLUMNS].copy()
             benchmark.index = _normalized_index(pd.DatetimeIndex(benchmark.index))
@@ -801,6 +877,7 @@ class ChartPreviewWindow(tk.Toplevel):
             self.benchmark_data = pd.DataFrame()
             self.comparison_status_var.set("S&P 500 데이터를 준비해 주세요.")
         self._set_navigation_state(navigation_index, navigation_total)
+        self._render_info()  # after the S&P 500 series above is in place
         self.title(f"{self.ticker} · MMRM 시나리오 차트 미리보기")
         self.deiconify()
         self.lift()

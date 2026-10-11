@@ -458,3 +458,63 @@ def test_header_items_for_records_without_a_buy() -> None:
     assert items["3개월후 수익률"] == ("-", "muted")
     assert whole_chart[3] == ("결과", "최근 3년", "muted")
     assert whole_chart[0] == ("1차신호일", "-", "first")
+
+
+def test_benchmark_header_shows_the_index_on_the_records_weeks() -> None:
+    from chart_preview import benchmark_header_items
+
+    index = pd.date_range("2025-01-06", periods=60, freq="W-MON")
+    benchmark = pd.DataFrame(
+        {"Close": [1000.0 + 10 * week for week in range(60)], "MA_50": 1100.0}, index=index
+    )
+    cycle = pd.Series(
+        {
+            "FirstSignalDate": index[10],
+            "SecondSignalDate": index[14],
+            "ThirdDecisionDate": index[20],
+            "Outcome": "매수 성공",
+            "Return3MStatus": "확정",
+            "Return6MStatus": "확정",
+            "Return9MStatus": "진행 중",
+            "Return12MStatus": "진행 중",
+        }
+    )
+
+    items = benchmark_header_items(benchmark, cycle)
+
+    assert items == [
+        ("1차 주 종가", "1,100", "first"),
+        ("2차 주 종가", "1,140", "second"),
+        ("3차 주 종가", "1,200", "third"),
+        ("S&P500 상태", "50주선 위", "up"),
+        ("3개월후 수익률", "+10.83%", "up"),  # 1,330 over 1,200
+        ("6개월후 수익률", "+21.67%", "up"),
+        ("9개월후 수익률", "진행 중", "muted"),
+        ("12개월후 수익률", "진행 중", "muted"),
+    ]
+
+
+def test_benchmark_header_without_a_buy_or_data() -> None:
+    from chart_preview import benchmark_header_items
+
+    index = pd.date_range("2025-01-06", periods=30, freq="W-MON")
+    benchmark = pd.DataFrame({"Close": 900.0, "MA_50": 1000.0}, index=index)
+    waiting = pd.Series(
+        {
+            "FirstSignalDate": index[10],
+            "Outcome": "2차 신호 대기",
+            "Return3MStatus": "해당 없음",
+        }
+    )
+
+    items = dict(
+        (caption, (value, tone)) for caption, value, tone in benchmark_header_items(benchmark, waiting)
+    )
+    empty = benchmark_header_items(pd.DataFrame(columns=["Close", "MA_50"]), waiting)
+
+    assert items["1차 주 종가"] == ("900.0", "first")
+    assert items["2차 주 종가"] == ("-", "second")
+    assert items["S&P500 상태"] == ("50주선 아래", "down")
+    assert items["3개월후 수익률"] == ("해당 없음", "muted")
+    assert items["6개월후 수익률"] == ("-", "muted")
+    assert [value for _, value, _ in empty[:4]] == ["-", "-", "-", "-"]
