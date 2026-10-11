@@ -281,8 +281,15 @@ class ChartPreviewWindow(tk.Toplevel):
             self.header_frame,
             textvariable=self.status_var,
             font=(self.ui_font_family, 11, "bold"),
-            padding=(10, 7, 485, 2),
+            padding=(10, 7, 620, 2),
         ).pack(side="left", fill="x", expand=True)
+        # Temporary entry point for the experimental signal trend view.
+        self.signal_trend_button = ttk.Button(
+            self.header_frame,
+            text="신호 흐름 (임시)",
+            command=self._open_signal_trend,
+        )
+        self.signal_trend_window = None
         self.previous_button = ttk.Button(
             self.header_frame,
             text="← 이전",
@@ -392,12 +399,29 @@ class ChartPreviewWindow(tk.Toplevel):
 
     def _position_header_controls(self, fixed_right: int | None = None) -> None:
         relx = 1.0 if fixed_right is None else 0.0
-        right = -10 if fixed_right is None else max(490, int(fixed_right) - 10)
+        right = -10 if fixed_right is None else max(625, int(fixed_right) - 10)
         common = {"relx": relx, "y": 6, "anchor": "ne"}
         self.benchmark_button.place_configure(x=right, **common)
         self.next_button.place_configure(x=right - 165, **common)
         self.navigation_label.place_configure(x=right - 250, y=10, anchor="ne", relx=relx)
         self.previous_button.place_configure(x=right - 330, **common)
+        self.signal_trend_button.place_configure(x=right - 425, **common)
+
+    def _open_signal_trend(self) -> None:
+        from signal_trend import SignalTrendWindow
+
+        window = self.signal_trend_window
+        if window is None or not window.winfo_exists():
+            window = self.signal_trend_window = SignalTrendWindow(self, self.theme_mode)
+        window.show(self.ticker, self.data, self.cycle)
+        window.deiconify()
+        window.lift()
+
+    def _refresh_signal_trend(self) -> None:
+        """Keep an open trend window on the record the chart is showing."""
+        window = getattr(self, "signal_trend_window", None)
+        if window is not None and window.winfo_exists():
+            window.show(self.ticker, self.data, self.cycle)
 
     def _request_navigation(self, direction: int) -> str:
         if direction < 0 and str(self.previous_button.cget("state")) == "disabled":
@@ -431,6 +455,9 @@ class ChartPreviewWindow(tk.Toplevel):
         self.canvas.configure(background=self.palette["chart_background"])
         self.comparison_canvas.configure(background=self.palette["chart_background"])
         self._schedule_redraw()
+        window = getattr(self, "signal_trend_window", None)
+        if window is not None and window.winfo_exists():
+            window.set_theme(self.theme_mode)
 
     def _toggle_benchmark(self) -> None:
         if self.benchmark_visible and not self.benchmark_data.empty:
@@ -646,6 +673,7 @@ class ChartPreviewWindow(tk.Toplevel):
         self.lift()
         self.focus_force()
         self._schedule_redraw()
+        self._refresh_signal_trend()
 
     def _close(self) -> None:
         callback = self._on_close_callback
