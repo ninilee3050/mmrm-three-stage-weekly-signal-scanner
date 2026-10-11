@@ -47,6 +47,7 @@ BENCHMARK_TICKER = SP500_TICKER
 BENCHMARK_NAME = SP500_NAME
 BENCHMARK_OPEN_TEXT = "S&P 500 비교 열기"
 BENCHMARK_CLOSE_TEXT = "S&P 500 비교 닫기"
+END_LABEL_GAP = 16.0
 SCALE_STEPS = (25, 10, 5, 2, 1)
 OSCILLATOR_GUIDES = (30.0, 70.0)
 MIN_POINT_GAP = 0.18
@@ -234,6 +235,7 @@ class SignalTrendWindow(tk.Toplevel):
         )
         self.benchmark_canvas.pack(fill="both", expand=True)
 
+        self.ticker = ""
         self.data = pd.DataFrame()
         self.points = signal_points(self.data, None)
         self.benchmark_data = pd.DataFrame()
@@ -251,6 +253,7 @@ class SignalTrendWindow(tk.Toplevel):
         navigation_total: int = 0,
     ) -> None:
         self._set_navigation_state(navigation_index, navigation_total)
+        self.ticker = ticker
         self.data = data
         self.points = signal_points(data, cycle)
         dates = "  ·  ".join(
@@ -258,6 +261,7 @@ class SignalTrendWindow(tk.Toplevel):
         )
         self.status_var.set(f"{ticker}  |  {dates or '신호 지점 없음'}")
         self.title(f"{ticker} · 신호 지점 흐름 (임시)")
+        self._ensure_benchmark()
         self._show_charts()
         if self._navigating:
             # The chart preview raised itself to show the record; come back on top.
@@ -314,16 +318,21 @@ class SignalTrendWindow(tk.Toplevel):
         self.benchmark_frame.pack(side="right", fill="both")
         self.benchmark_button.configure(text=BENCHMARK_CLOSE_TEXT)
 
-        if self.benchmark_data.empty and not self.benchmark_loading:
-            loaded = getattr(self.master, "benchmark_data", None)
-            if loaded is not None and not loaded.empty:
-                # The chart preview already has the series.
-                self.benchmark_data = loaded
-            else:
-                self.benchmark_loading = True
-                self.benchmark_error = ""
-                threading.Thread(target=self._load_benchmark_worker, daemon=True).start()
+        self.benchmark_error = ""  # opening the comparison retries a failed load
+        self._ensure_benchmark()
         self._show_charts()
+
+    def _ensure_benchmark(self) -> None:
+        """Get the S&P 500 series once; a failed load is not retried by itself."""
+        if not self.benchmark_data.empty or self.benchmark_loading or self.benchmark_error:
+            return
+        loaded = getattr(self.master, "benchmark_data", None)
+        if loaded is not None and not loaded.empty:
+            # The chart preview already has the series.
+            self.benchmark_data = loaded
+        else:
+            self.benchmark_loading = True
+            threading.Thread(target=self._load_benchmark_worker, daemon=True).start()
 
     def _load_benchmark_worker(self) -> None:
         try:
@@ -349,13 +358,18 @@ class SignalTrendWindow(tk.Toplevel):
         self._show_charts()
 
     def _show_charts(self) -> None:
-        """Draw the record and, when open, the S&P 500 on the same signal weeks.
+        """Draw the record and the S&P 500 on the same signal weeks.
 
-        Side by side, the two averages share one vertical scale, so the same
-        slope means the same move on both.
+        With the comparison closed, the S&P 500's average is laid over the
+        record's.  Side by side, each chart shows its own average and the two
+        share one vertical scale, so the same slope means the same move.
         """
         if not self.benchmark_visible:
-            self.canvas.show(self.data, self.points)
+            overlay = None
+            if not self.benchmark_data.empty and not self.points.empty:
+                points = points_on_dates(self.benchmark_data, self.points["Date"].to_dict())
+                overlay = trend_lines(self.benchmark_data, points)["평균"]
+            self.canvas.show(self.data, self.points, overlay=overlay, name=self.ticker)
             return
         if self.benchmark_loading:
             message = "S&P 500 주봉 데이터를 불러오는 중입니다..."
@@ -390,6 +404,8 @@ class TrendCanvas(tk.Canvas):
         self.points = signal_points(self.data, None)
         self.message = ""
         self.average_scale: tuple[float, float] | None = None
+        self.overlay: pd.Series | None = None
+        self.name = ""
         self.bind("<Configure>", lambda _event: self._redraw())
 
     def show(
@@ -398,14 +414,20 @@ class TrendCanvas(tk.Canvas):
         points: pd.DataFrame,
         message: str = "",
         scale: tuple[float, float] | None = None,
+        overlay: pd.Series | None = None,
+        name: str = "",
     ) -> None:
         """Draw ``points`` of ``data``.
 
         ``message`` replaces the empty-state text; ``scale`` fixes the range
         of the combined panel instead of fitting it to this average.
+        ``overlay`` is the S&P 500's average on the same signals, drawn over
+        the average of ``name`` in the combined panel.
         """
         self.data, self.points, self.message = data, points, message
         self.average_scale = scale
+        self.overlay = overlay
+        self.name = name
         self._redraw()
 
     def set_theme(self, mode: str) -> None:
@@ -465,23 +487,25 @@ class TrendCanvas(tk.Canvas):
 
     def _draw_points_line(
         self, xs: list[float], ys: list[float | None], color: str, width: float, radius: float,
-        signal_colored: bool,
+        signal_colored: bool, dash: tuple[int, int] | None = None, hollow: bool = False,
     ) -> None:
         """Connect the points that have a value and draw a dot on each.
 
         A rising stretch is red and a falling one blue, as on the candles.
+        ``dash`` and ``hollow`` set a second series apart from the main one.
         """
         drawn = [(x, y) for x, y in zip(xs, ys) if y is not None]
         for (x1, y1), (x2, y2) in zip(drawn, drawn[1:]):
             # Canvas y grows downward, so a smaller y is a higher value.
             segment = RISE_COLOR if y2 < y1 else FALL_COLOR if y2 > y1 else color
-            self.create_line(x1, y1, x2, y2, fill=segment, width=width)
+            self.create_line(x1, y1, x2, y2, fill=segment, width=width, dash=dash)
         for label, x, y in zip(self.points.index, xs, ys):
             if y is None:
                 continue
             fill = SIGNAL_COLORS[label] if signal_colored else color
             self.create_oval(
-                x - radius, y - radius, x + radius, y + radius, fill=fill, outline=fill
+                x - radius, y - radius, x + radius, y + radius,
+                fill=self.palette["chart_panel"] if hollow else fill, outline=fill, width=2,
             )
 
     def _draw_signal_labels(self, xs: list[float], y: float, with_dates: bool) -> None:
@@ -576,16 +600,19 @@ class TrendCanvas(tk.Canvas):
         muted = self.palette["chart_text"]
         average_color = self.palette["text"]
         lines = trend_lines(self.data, self.points)
+        overlay = None if self.overlay is None else self.overlay.reindex(self.points.index)
         self._draw_frame(box, "종합 · 1차 대비 변화", average_color)
-        self._text(
-            right - 8, top + 7,
-            "1차 신호 때 = 0  ·  여섯 지표가 평균적으로 오르면 +, 내리면 −",
-            "ne", muted, size=8,
-        )
+        note = "1차 신호 때 = 0  ·  여섯 지표가 평균적으로 오르면 +, 내리면 −"
+        if overlay is not None:
+            note = f"굵은 실선 {self.name}  ·  가는 점선 {BENCHMARK_NAME} (같은 주)  ·  " + note
+        self._text(right - 8, top + 7, note, "ne", muted, size=8)
 
         plot_left, plot_right = left + 96, right - 110
         plot_top, plot_bottom = top + 62, bottom - 46
-        low, high = self.average_scale or average_range(lines["평균"])
+        if overlay is not None:
+            low, high = average_range(lines["평균"], overlay)
+        else:
+            low, high = self.average_scale or average_range(lines["평균"])
         y = lambda value: _map(value, low, high, plot_top, plot_bottom)
         xs = self._point_xs(plot_left, plot_right)
 
@@ -603,13 +630,44 @@ class TrendCanvas(tk.Canvas):
             )
 
         average_ys = [None if pd.isna(value) else y(value) for value in lines["평균"]]
+        if overlay is None:
+            overlay_ys: list[float | None] = [None] * len(xs)
+            overlay_values = [float("nan")] * len(xs)
+            ends = [(average_ys[-1], "평균", average_color)]
+        else:
+            overlay_values = overlay.tolist()
+            overlay_ys = [None if pd.isna(value) else y(value) for value in overlay_values]
+            self._draw_points_line(
+                xs, overlay_ys, muted, width=2, radius=6, signal_colored=True,
+                dash=(6, 4), hollow=True,
+            )
+            ends = [(average_ys[-1], self.name, average_color), (overlay_ys[-1], BENCHMARK_NAME, muted)]
         self._draw_points_line(xs, average_ys, average_color, width=4, radius=9, signal_colored=True)
-        if len(xs) > 1 and average_ys[-1] is not None:
-            self._text(xs[-1] + 18, average_ys[-1], "평균", "w", average_color, bold=True)
 
-        for x, point_y, value in zip(xs, average_ys, lines["평균"]):
+        # Name each line at its right end, moved apart when the ends are close.
+        ends = sorted((end for end in ends if end[0] is not None), key=lambda end: end[0])
+        if len(xs) > 1 and ends:
+            shift = max(0.0, END_LABEL_GAP - (ends[-1][0] - ends[0][0])) / 2
+            offsets = (-shift, shift) if len(ends) == 2 else (0.0,)
+            for (end_y, name, color), offset in zip(ends, offsets):
+                self._text(xs[-1] + 18, end_y + offset, name, "w", color, bold=True)
+
+        # The higher line's number goes above its point, the lower one's below.
+        for x, point_y, value, overlay_y, overlay_value in zip(
+            xs, average_ys, lines["평균"], overlay_ys, overlay_values
+        ):
+            on_top = overlay_y is None or point_y is None or point_y <= overlay_y
             if point_y is not None:
-                self._text(x, point_y - 15, _change_text(value), "s", average_color, 11, True)
+                self._text(
+                    x, point_y - 15 if on_top else point_y + 15, _change_text(value),
+                    "s" if on_top else "n", average_color, 11, True,
+                )
+            # Where both lines sit on the same spot, one number is enough.
+            if overlay_y is not None and overlay_y != point_y:
+                self._text(
+                    x, overlay_y + 12 if on_top else overlay_y - 12, _change_text(overlay_value),
+                    "n" if on_top else "s", muted, 9,
+                )
 
         self._draw_signal_labels(xs, bottom - 8, with_dates=True)
         for weeks, earlier, later in zip(weeks_between(self.points["Date"]), xs, xs[1:]):
