@@ -118,6 +118,13 @@ PRICE_SCALE_TICKS = 5
 MIN_TEXT_CONTRAST = 3.5
 SIGNAL_LABEL_MIN_GAP = 30
 SECOND_ROW_BUTTON_Y = 42
+CONTROLS_HELP_TEXT = (
+    "방향키 ←·→ : 이전·다음 기록\n"
+    "마우스 휠 : 확대·축소\n"
+    "드래그 : 좌우 이동\n"
+    "더블클릭 : 선택한 기록 전체 보기\n"
+    "마우스를 차트에 올리면 가격 칸의 날짜와 수치가 그 주의 값으로 바뀝니다."
+)
 SIGNAL_TREND_OPEN_TEXT = "신호 흐름 열기"
 SIGNAL_TREND_CLOSE_TEXT = "신호 흐름 닫기"
 CANDLE_BODY_FILL = ""
@@ -385,6 +392,14 @@ class ChartPreviewWindow(tk.Toplevel):
             command=self._toggle_signal_trend,
         )
         self.signal_trend_window = None
+        # The controls are explained on hover instead of in a line of their own.
+        from gui.tooltips import HoverTooltip, attach_widget_tooltip
+
+        self.controls_help = ttk.Label(
+            self.header_frame, text="조작법 ⓘ", foreground=self.palette["muted"]
+        )
+        self.hover_tooltip = HoverTooltip(self, self.ui_font_family)
+        attach_widget_tooltip(self.hover_tooltip, self.controls_help, CONTROLS_HELP_TEXT)
         self.previous_button = ttk.Button(
             self.header_frame,
             text="← 이전",
@@ -493,6 +508,7 @@ class ChartPreviewWindow(tk.Toplevel):
         self.next_button.place_configure(x=right - 165, **common)
         self.navigation_label.place_configure(x=right - 250, y=10, anchor="ne", relx=relx)
         self.previous_button.place_configure(x=right - 330, **common)
+        self.controls_help.place_configure(x=right - 432, y=10, anchor="ne", relx=relx)
         self.signal_trend_button.place_configure(
             x=right, y=SECOND_ROW_BUTTON_Y, anchor="ne", relx=relx
         )
