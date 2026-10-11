@@ -45,8 +45,10 @@ SCALE_STEP = 25
 OSCILLATOR_GUIDES = (30.0, 70.0)
 MIN_POINT_GAP = 0.18
 BAND_OPACITY = 0.16
-BAND_ABOVE_COLOR = "#ef4444"
-BAND_BELOW_COLOR = "#3b82f6"
+RISE_COLOR = "#ef4444"
+FALL_COLOR = "#3b82f6"
+BAND_ABOVE_COLOR = RISE_COLOR
+BAND_BELOW_COLOR = FALL_COLOR
 MODE_CHANGE = "change"
 MODE_POSITION = "position"
 MODE_LABELS = {
@@ -275,12 +277,15 @@ class SignalTrendWindow(tk.Toplevel):
         self, xs: list[float], ys: list[float | None], color: str, width: float, radius: float,
         signal_colored: bool,
     ) -> None:
-        """Connect the points that have a value and draw a dot on each."""
+        """Connect the points that have a value and draw a dot on each.
+
+        A rising stretch is red and a falling one blue, as on the candles.
+        """
         drawn = [(x, y) for x, y in zip(xs, ys) if y is not None]
-        if len(drawn) >= 2:
-            self.canvas.create_line(
-                *[coordinate for point in drawn for coordinate in point], fill=color, width=width
-            )
+        for (x1, y1), (x2, y2) in zip(drawn, drawn[1:]):
+            # Canvas y grows downward, so a smaller y is a higher value.
+            segment = RISE_COLOR if y2 < y1 else FALL_COLOR if y2 > y1 else color
+            self.canvas.create_line(x1, y1, x2, y2, fill=segment, width=width)
         for label, x, y in zip(self.points.index, xs, ys):
             if y is None:
                 continue
@@ -307,7 +312,7 @@ class SignalTrendWindow(tk.Toplevel):
         name, column, compact, fixed_scale, baseline, baseline_name = indicator
         left, top, right, bottom = box
         muted = self.palette["chart_text"]
-        # Every panel uses one line color; the signal dots carry the color.
+        # Lines are colored by direction only; the signal dots carry the rest.
         color = self.palette["text"]
         self._draw_frame(box, name, color)
         if baseline is None:
