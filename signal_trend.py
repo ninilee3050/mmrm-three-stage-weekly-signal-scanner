@@ -41,14 +41,11 @@ BASELINE_COLUMNS = [
 ]
 POINT_COLUMNS = [*TREND_COLUMNS, *BASELINE_COLUMNS]
 RANGE_LOOKBACK_WEEKS = 52
-SCALE_STEP = 25
+SCALE_STEPS = (25, 10, 5, 2, 1)
 OSCILLATOR_GUIDES = (30.0, 70.0)
 MIN_POINT_GAP = 0.18
-BAND_OPACITY = 0.16
 RISE_COLOR = "#ef4444"
 FALL_COLOR = "#3b82f6"
-BAND_ABOVE_COLOR = RISE_COLOR
-BAND_BELOW_COLOR = FALL_COLOR
 MODE_CHANGE = "change"
 MODE_POSITION = "position"
 MODE_LABELS = {
@@ -386,7 +383,6 @@ class SignalTrendWindow(tk.Toplevel):
         muted = self.palette["chart_text"]
         average_color = self.palette["text"]
         lines = trend_lines(self.data, self.points, mode)
-        indicators = lines[TREND_COLUMNS]
         self._draw_frame(box, f"종합 · {MODE_LABELS[mode]}", average_color)
         self._text(
             right - 8, top + 7,
@@ -400,13 +396,12 @@ class SignalTrendWindow(tk.Toplevel):
         if mode == MODE_POSITION:
             low, high = 0.0, 100.0
         else:
-            low, high = _padded_range(indicators.to_numpy(), padding=0.08, include_zero=True)
+            low, high = _padded_range(lines["평균"].to_numpy(), padding=0.35, include_zero=True)
         y = lambda value: _map(value, low, high, plot_top, plot_bottom)
         xs = self._point_xs(plot_left, plot_right)
 
-        self._draw_spread_bands(xs, indicators, lines["평균"], y)
-        first_tick = np.ceil(low / SCALE_STEP) * SCALE_STEP
-        for tick in np.arange(first_tick, high + 0.01, SCALE_STEP):
+        step = _scale_step(low, high)
+        for tick in np.arange(np.ceil(low / step) * step, high + 0.01, step):
             self.canvas.create_line(
                 left + 46, y(tick), right - 100, y(tick), fill=self.palette["chart_grid"]
             )
@@ -416,7 +411,7 @@ class SignalTrendWindow(tk.Toplevel):
                 left + 46, y(0), right - 100, y(0), fill=muted, dash=(4, 3)
             )
 
-        # Only the average is drawn; the bands show how far the indicators spread.
+        # Only the average is drawn; "벌어짐" tells how far the indicators spread.
         average_ys = [None if pd.isna(value) else y(value) for value in lines["평균"]]
         self._draw_points_line(xs, average_ys, average_color, width=4, radius=6, signal_colored=False)
         if len(xs) > 1 and average_ys[-1] is not None:
@@ -435,26 +430,13 @@ class SignalTrendWindow(tk.Toplevel):
         for weeks, earlier, later in zip(weeks_between(self.points["Date"]), xs, xs[1:]):
             self._text((earlier + later) / 2, bottom - 9, f"{weeks}주", "s", muted, size=8)
 
-    def _draw_spread_bands(self, xs: list[float], indicators: pd.DataFrame, average: pd.Series,
-                           y) -> None:
-        """Shade from the average up to the highest and down to the lowest indicator.
 
-        The lines start together and drift apart, so the bands widen like a
-        forecast cone and show how much the indicators disagree.
-        """
-        panel_color = self.palette["chart_panel"]
-        for edge, color in (
-            (indicators.max(axis=1), BAND_ABOVE_COLOR),
-            (indicators.min(axis=1), BAND_BELOW_COLOR),
-        ):
-            outer = [(x, y(value)) for x, value in zip(xs, edge) if not pd.isna(value)]
-            inner = [(x, y(value)) for x, value in zip(xs, average) if not pd.isna(value)]
-            if len(outer) < 2:
-                continue
-            outline = [coordinate for point in outer + inner[::-1] for coordinate in point]
-            self.canvas.create_polygon(
-                *outline, fill=_blend(color, panel_color, BAND_OPACITY), outline=""
-            )
+def _scale_step(low: float, high: float) -> float:
+    """Largest round step that still puts at least three ticks on the scale."""
+    for step in SCALE_STEPS:
+        if (high - low) / step >= 3:
+            return step
+    return SCALE_STEPS[-1]
 
 
 def _padded_range(
@@ -469,15 +451,6 @@ def _padded_range(
         low, high = min(0.0, low), max(0.0, high)
     margin = (high - low) * padding if high > low else max(abs(low) * 0.05, 1.0)
     return low - margin, high + margin
-
-
-def _blend(color: str, background: str, opacity: float) -> str:
-    """``color`` at ``opacity`` over ``background``; a Tk canvas has no alpha."""
-    front = [int(color[index : index + 2], 16) for index in (1, 3, 5)]
-    back = [int(background[index : index + 2], 16) for index in (1, 3, 5)]
-    return "#" + "".join(
-        f"{round(f * opacity + b * (1 - opacity)):02x}" for f, b in zip(front, back)
-    )
 
 
 def _map(value: float, low: float, high: float, top: float, bottom: float) -> float:
