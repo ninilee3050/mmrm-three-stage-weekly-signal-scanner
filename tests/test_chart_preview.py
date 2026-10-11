@@ -435,7 +435,6 @@ def test_header_items_mirror_the_signal_history_row() -> None:
         ("6개월후 수익률", "-4.00%", "down"),
         ("9개월후 수익률", "진행 중", "muted"),
         ("12개월후 수익률", "진행 중", "muted"),
-        ("S&P500 기준", "2026-10-05 종가 7,811.54 · 50주선 7,174.88", "muted"),
     ]
 
 
@@ -457,6 +456,5 @@ def test_header_items_for_records_without_a_buy() -> None:
     assert items["검토등급"] == ("-", "muted")
     assert items["S&P500 상태"] == ("50주선 아래", "down")
     assert items["3개월후 수익률"] == ("-", "muted")
-    assert "S&P500 기준" not in items
     assert whole_chart[3] == ("결과", "최근 3년", "muted")
     assert whole_chart[0] == ("1차신호일", "-", "first")

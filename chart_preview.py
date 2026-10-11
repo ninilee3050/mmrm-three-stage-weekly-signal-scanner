@@ -186,14 +186,12 @@ def cycle_return_summary(cycle: pd.Series | None) -> str:
 
 
 def _summary_fields(summary: str) -> dict[str, str]:
-    """Split "이름: 값  |  이름: 값" text; parts without a name go under ""."""
+    """Split "이름: 값  |  이름: 값" text; parts without a name are dropped."""
     fields: dict[str, str] = {}
     for part in summary.split("|"):
         name, separator, value = part.partition(":")
         if separator:
             fields[name.strip()] = value.strip()
-        elif part.strip():
-            fields[""] = " ".join(filter(None, [fields.get(""), part.strip()]))
     return fields
 
 
@@ -242,8 +240,6 @@ def cycle_header_items(
         )
         tone = "up" if text.startswith("+") else "down" if text[:1] == "-" and len(text) > 1 else "muted"
         items.append((f"{label.replace('M', '개월')}후 수익률", text, tone))
-    if sp500.get(""):
-        items.append(("S&P500 기준", sp500[""], "muted"))
     return items
 
 
