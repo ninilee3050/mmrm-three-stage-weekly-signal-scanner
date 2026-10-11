@@ -134,6 +134,13 @@ SIGNAL_STYLES = (
     ("2차", "SecondSignalDate", "#f59e0b"),
     ("3차", "ThirdDecisionDate", "#dc2626"),
 )
+SIGNAL_TONES = ("first", "second", "third")
+HEADER_TONE_COLORS = {
+    **{tone: color for tone, (_, _, color) in zip(SIGNAL_TONES, SIGNAL_STYLES)},
+    "up": CANDLE_UP_COLOR,
+    "down": CANDLE_DOWN_COLOR,
+    "wait": "#f59e0b",
+}
 
 BUY_MARKER_HORIZONS = (
     ("3M", 13, "Return3M", "Return3MStatus"),
@@ -176,6 +183,68 @@ def cycle_return_summary(cycle: pd.Series | None) -> str:
         f"{label} {format_cycle_return(cycle.get(value_column), cycle.get(status_column))}"
         for label, value_column, status_column in RETURN_HORIZONS
     )
+
+
+def _summary_fields(summary: str) -> dict[str, str]:
+    """Split "이름: 값  |  이름: 값" text; parts without a name go under ""."""
+    fields: dict[str, str] = {}
+    for part in summary.split("|"):
+        name, separator, value = part.partition(":")
+        if separator:
+            fields[name.strip()] = value.strip()
+        elif part.strip():
+            fields[""] = " ".join(filter(None, [fields.get(""), part.strip()]))
+    return fields
+
+
+def cycle_header_items(
+    cycle: pd.Series | None,
+    chart_strength_summary: str = "",
+    sp500_summary: str = "",
+) -> list[tuple[str, str, str]]:
+    """The record's signal-history row as (caption, value, tone) for the header.
+
+    Tones: "first"/"second"/"third" for the signals, "up"/"down" for good and
+    bad values, "wait" for pending or highlighted ones, "muted" for values
+    that are absent or secondary, "text" for the rest.
+    """
+    def date(column: str) -> str:
+        return _date_text(cycle.get(column)) if cycle is not None else "-"
+
+    outcome = str(cycle.get("Outcome", "전체 차트")) if cycle is not None else "최근 3년"
+    if cycle is None:
+        outcome_tone = "muted"
+    elif outcome == "매수 성공":
+        outcome_tone = "up"
+    else:
+        outcome_tone = "wait" if "대기" in outcome else "down"
+    strength = _summary_fields(chart_strength_summary or "차트 강도: 해당 없음")
+    score = strength.get("차트 강도", "-")
+    grade = strength.get("검토등급", "-")
+    sp500 = _summary_fields(sp500_summary)
+    sp500_state = sp500.get("S&P500 상태", "-")
+    sp500_tone = "up" if "위" in sp500_state else "down" if "아래" in sp500_state else "muted"
+
+    items = [
+        ("1차신호일", date("FirstSignalDate"), "first"),
+        ("2차신호일", date("SecondSignalDate"), "second"),
+        ("3차판정일", date("ThirdDecisionDate"), "third"),
+        ("결과", outcome, outcome_tone),
+        ("차트 강도", score, "text" if score.endswith("점") else "muted"),
+        ("검토등급", grade, "wait" if grade == "우선검토" else "muted" if grade == "-" else "text"),
+        ("S&P500 상태", sp500_state, sp500_tone),
+    ]
+    for label, value_column, status_column in RETURN_HORIZONS:
+        text = (
+            format_cycle_return(cycle.get(value_column), cycle.get(status_column))
+            if cycle is not None
+            else "-"
+        )
+        tone = "up" if text.startswith("+") else "down" if text[:1] == "-" and len(text) > 1 else "muted"
+        items.append((f"{label.replace('M', '개월')}후 수익률", text, tone))
+    if sp500.get(""):
+        items.append(("S&P500 기준", sp500[""], "muted"))
+    return items
 
 
 @dataclass(frozen=True)
@@ -271,7 +340,7 @@ class ChartPreviewWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._close)
 
         self.status_var = tk.StringVar(value="차트 데이터를 준비해 주세요.")
-        self.chart_strength_var = tk.StringVar(value="차트 강도: 산정 대기")
+        self._info_items: list[tuple[str, str, str]] = []
         self.hover_var = tk.StringVar(
             value=(
                 "방향키 ←·→: 이전·다음 기록  |  휠: 확대·축소  |  "
@@ -283,8 +352,8 @@ class ChartPreviewWindow(tk.Toplevel):
         ttk.Label(
             self.header_frame,
             textvariable=self.status_var,
-            font=(self.ui_font_family, 11, "bold"),
-            padding=(10, 7, 485, 2),
+            font=(self.ui_font_family, 12, "bold"),
+            padding=(10, 7, 485, 4),
         ).pack(side="left", fill="x", expand=True)
         # Opens and closes the signal trend window beside this one.  It sits
         # under the S&P 500 button, beside the two summary lines, so it does not
@@ -320,12 +389,9 @@ class ChartPreviewWindow(tk.Toplevel):
             command=self._toggle_benchmark,
         )
         self._position_header_controls()
-        ttk.Label(
-            self,
-            textvariable=self.chart_strength_var,
-            font=(self.ui_font_family, 9, "bold"),
-            padding=(10, 0, 10, 2),
-        ).pack(fill="x")
+        # The record's row from the signal history table, as captioned values.
+        self.info_frame = ttk.Frame(self, padding=(10, 0, 10, 2))
+        self.info_frame.pack(fill="x")
         ttk.Label(
             self,
             textvariable=self.hover_var,
@@ -492,9 +558,36 @@ class ChartPreviewWindow(tk.Toplevel):
         self.canvas.configure(background=self.palette["chart_background"])
         self.comparison_canvas.configure(background=self.palette["chart_background"])
         self._schedule_redraw()
+        self._render_info()
         window = getattr(self, "signal_trend_window", None)
         if window is not None and window.winfo_exists():
             window.set_theme(self.theme_mode)
+
+    def _render_info(self) -> None:
+        """Lay the record's values out as a caption row over a value row."""
+        for child in self.info_frame.winfo_children():
+            child.destroy()
+        background, text = self.palette["window"], self.palette["text"]
+        muted = self.palette["muted"]
+        tones = {
+            tone: readable_text_color(color, background, text)
+            for tone, color in HEADER_TONE_COLORS.items()
+        }
+        for column, (caption, value, tone) in enumerate(self._info_items):
+            # A signal's color marks its caption; elsewhere it marks the value.
+            on_caption = tone in SIGNAL_TONES
+            ttk.Label(
+                self.info_frame,
+                text=caption,
+                font=(self.ui_font_family, 8, "bold" if on_caption else "normal"),
+                foreground=tones[tone] if on_caption else muted,
+            ).grid(row=0, column=column, sticky="w", padx=(0, 24))
+            ttk.Label(
+                self.info_frame,
+                text=value,
+                font=(self.ui_font_family, 10, "normal" if tone == "muted" else "bold"),
+                foreground=text if on_caption else tones.get(tone, muted if tone == "muted" else text),
+            ).grid(row=1, column=column, sticky="w", padx=(0, 24))
 
     def _toggle_benchmark(self) -> None:
         if self.benchmark_visible and not self.benchmark_data.empty:
@@ -673,23 +766,12 @@ class ChartPreviewWindow(tk.Toplevel):
         self.initial_view = (self.view_start, self.view_end)
         self._drag_origin = None
 
-        first = _date_text(cycle.get("FirstSignalDate")) if cycle is not None else "-"
-        second = _date_text(cycle.get("SecondSignalDate")) if cycle is not None else "-"
-        third = _date_text(cycle.get("ThirdDecisionDate")) if cycle is not None else "-"
-        outcome = str(cycle.get("Outcome", "전체 차트")) if cycle is not None else "최근 3년"
-        returns = cycle_return_summary(cycle)
         name = f" · {company}" if company and company.upper() != self.ticker else ""
         if rank_text:
             name += f" · {rank_text}"
-        return_suffix = f"  |  {returns}" if returns else ""
-        self.status_var.set(
-            f"{self.ticker}{name}  |  1차 {first}  ·  2차 {second}  ·  "
-            f"3차 {third}  |  {outcome}{return_suffix}"
-        )
-        summary_parts = [chart_strength_summary or "차트 강도: 해당 없음"]
-        if sp500_summary:
-            summary_parts.append(sp500_summary)
-        self.chart_strength_var.set("  |  ".join(summary_parts))
+        self.status_var.set(f"{self.ticker}{name}")
+        self._info_items = cycle_header_items(cycle, chart_strength_summary, sp500_summary)
+        self._render_info()
         if sp500_data is not None and not sp500_data.empty:
             benchmark = sp500_data.loc[:, CHART_COLUMNS].copy()
             benchmark.index = _normalized_index(pd.DatetimeIndex(benchmark.index))

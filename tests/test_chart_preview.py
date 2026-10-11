@@ -395,3 +395,68 @@ def test_header_hides_returns_for_cycles_without_a_buy() -> None:
     )
 
     assert cycle_return_summary(cycle) == ""
+
+
+def test_header_items_mirror_the_signal_history_row() -> None:
+    from chart_preview import cycle_header_items
+
+    cycle = pd.Series(
+        {
+            "FirstSignalDate": pd.Timestamp("2026-07-13"),
+            "SecondSignalDate": pd.Timestamp("2026-08-31"),
+            "ThirdDecisionDate": pd.Timestamp("2026-10-05"),
+            "Outcome": "매수 성공",
+            "Return3M": 12.345,
+            "Return3MStatus": "확정",
+            "Return6M": -4.0,
+            "Return6MStatus": "확정",
+            "Return9M": None,
+            "Return9MStatus": "진행 중",
+            "Return12M": None,
+            "Return12MStatus": "진행 중",
+        }
+    )
+
+    items = cycle_header_items(
+        cycle,
+        "차트 강도: 22.9점  |  검토등급: 우선검토",
+        "S&P500 상태: 50주선 위  |  2026-10-05 종가 7,811.54 · 50주선 7,174.88",
+    )
+
+    assert items == [
+        ("1차신호일", "2026-07-13", "first"),
+        ("2차신호일", "2026-08-31", "second"),
+        ("3차판정일", "2026-10-05", "third"),
+        ("결과", "매수 성공", "up"),
+        ("차트 강도", "22.9점", "text"),
+        ("검토등급", "우선검토", "wait"),
+        ("S&P500 상태", "50주선 위", "up"),
+        ("3개월후 수익률", "+12.35%", "up"),
+        ("6개월후 수익률", "-4.00%", "down"),
+        ("9개월후 수익률", "진행 중", "muted"),
+        ("12개월후 수익률", "진행 중", "muted"),
+        ("S&P500 기준", "2026-10-05 종가 7,811.54 · 50주선 7,174.88", "muted"),
+    ]
+
+
+def test_header_items_for_records_without_a_buy() -> None:
+    from chart_preview import cycle_header_items
+
+    waiting = pd.Series(
+        {"FirstSignalDate": pd.Timestamp("2026-07-13"), "Outcome": "2차 신호 대기"}
+    )
+
+    items = dict((caption, (value, tone)) for caption, value, tone in cycle_header_items(
+        waiting, "차트 강도: 산정 대기", "S&P500 상태: 50주선 아래"
+    ))
+    whole_chart = cycle_header_items(None)
+
+    assert items["2차신호일"] == ("-", "second")
+    assert items["결과"] == ("2차 신호 대기", "wait")
+    assert items["차트 강도"] == ("산정 대기", "muted")
+    assert items["검토등급"] == ("-", "muted")
+    assert items["S&P500 상태"] == ("50주선 아래", "down")
+    assert items["3개월후 수익률"] == ("-", "muted")
+    assert "S&P500 기준" not in items
+    assert whole_chart[3] == ("결과", "최근 3년", "muted")
+    assert whole_chart[0] == ("1차신호일", "-", "first")
