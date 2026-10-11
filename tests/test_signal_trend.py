@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from signal_trend import (
+    average_range,
     POINT_COLUMNS,
     change_from_first,
     points_on_dates,
@@ -141,3 +142,15 @@ def test_benchmark_is_read_on_the_same_weeks_as_the_signals() -> None:
     assert list(benchmark_points.index) == ["1차", "2차"]
     assert list(benchmark_points["Date"]) == list(points["Date"])
     assert list(benchmark_points["Close"]) == [1550.0, 1570.0]
+
+
+def test_shared_range_holds_both_averages() -> None:
+    stock = pd.Series([0.0, -3.0, 11.0])
+    index = pd.Series([0.0, -2.0, 1.0])
+
+    low, high = average_range(stock, index)
+
+    assert (low, high) == average_range(index, stock)
+    assert low < -3 and high > 11
+    # Alone, the index would be drawn on a much tighter range.
+    assert average_range(index)[1] < 3

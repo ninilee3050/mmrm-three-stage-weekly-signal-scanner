@@ -127,6 +127,12 @@ def trend_lines(data: pd.DataFrame, points: pd.DataFrame) -> pd.DataFrame:
     return lines.assign(평균=lines.mean(axis=1, skipna=True))
 
 
+def average_range(*averages: pd.Series) -> tuple[float, float]:
+    """Vertical range of the combined panel that holds every given average and 0."""
+    values = np.concatenate([np.asarray(average, dtype=float) for average in averages])
+    return _padded_range(values, padding=0.35, include_zero=True)
+
+
 def weeks_between(dates) -> list[int]:
     """Whole weeks from each signal to the next."""
     dates = pd.DatetimeIndex(dates)
@@ -252,8 +258,7 @@ class SignalTrendWindow(tk.Toplevel):
         )
         self.status_var.set(f"{ticker}  |  {dates or '신호 지점 없음'}")
         self.title(f"{ticker} · 신호 지점 흐름 (임시)")
-        self.canvas.show(data, self.points)
-        self._show_benchmark_points()
+        self._show_charts()
         if self._navigating:
             # The chart preview raised itself to show the record; come back on top.
             self._navigating = False
@@ -291,6 +296,7 @@ class SignalTrendWindow(tk.Toplevel):
             self.benchmark_button.configure(text=BENCHMARK_OPEN_TEXT)
             if self._geometry_before_benchmark and self.state() == "normal":
                 self.geometry(self._geometry_before_benchmark)
+            self._show_charts()
             return
 
         self.update_idletasks()
@@ -317,7 +323,7 @@ class SignalTrendWindow(tk.Toplevel):
                 self.benchmark_loading = True
                 self.benchmark_error = ""
                 threading.Thread(target=self._load_benchmark_worker, daemon=True).start()
-        self._show_benchmark_points()
+        self._show_charts()
 
     def _load_benchmark_worker(self) -> None:
         try:
@@ -340,11 +346,16 @@ class SignalTrendWindow(tk.Toplevel):
             index = pd.DatetimeIndex(pd.to_datetime(data.index))
             data = data.set_axis(index.tz_localize(None) if index.tz is not None else index)
             self.benchmark_data = data[~data.index.duplicated(keep="last")].sort_index()
-        self._show_benchmark_points()
+        self._show_charts()
 
-    def _show_benchmark_points(self) -> None:
-        """Show the S&P 500 on the same weeks as the record's signals."""
+    def _show_charts(self) -> None:
+        """Draw the record and, when open, the S&P 500 on the same signal weeks.
+
+        Side by side, the two averages share one vertical scale, so the same
+        slope means the same move on both.
+        """
         if not self.benchmark_visible:
+            self.canvas.show(self.data, self.points)
             return
         if self.benchmark_loading:
             message = "S&P 500 주봉 데이터를 불러오는 중입니다..."
@@ -353,10 +364,16 @@ class SignalTrendWindow(tk.Toplevel):
         else:
             message = ""
         if message or self.benchmark_data.empty:
+            self.canvas.show(self.data, self.points)
             self.benchmark_canvas.show(pd.DataFrame(), signal_points(pd.DataFrame(), None), message)
             return
         points = points_on_dates(self.benchmark_data, self.points["Date"].to_dict())
-        self.benchmark_canvas.show(self.benchmark_data, points)
+        shared = average_range(
+            trend_lines(self.data, self.points)["평균"],
+            trend_lines(self.benchmark_data, points)["평균"],
+        )
+        self.canvas.show(self.data, self.points, scale=shared)
+        self.benchmark_canvas.show(self.benchmark_data, points, scale=shared)
 
 
 class TrendCanvas(tk.Canvas):
@@ -372,11 +389,23 @@ class TrendCanvas(tk.Canvas):
         self.data = pd.DataFrame()
         self.points = signal_points(self.data, None)
         self.message = ""
+        self.average_scale: tuple[float, float] | None = None
         self.bind("<Configure>", lambda _event: self._redraw())
 
-    def show(self, data: pd.DataFrame, points: pd.DataFrame, message: str = "") -> None:
-        """Draw ``points`` of ``data``; ``message`` replaces the empty-state text."""
+    def show(
+        self,
+        data: pd.DataFrame,
+        points: pd.DataFrame,
+        message: str = "",
+        scale: tuple[float, float] | None = None,
+    ) -> None:
+        """Draw ``points`` of ``data``.
+
+        ``message`` replaces the empty-state text; ``scale`` fixes the range
+        of the combined panel instead of fitting it to this average.
+        """
         self.data, self.points, self.message = data, points, message
+        self.average_scale = scale
         self._redraw()
 
     def set_theme(self, mode: str) -> None:
@@ -556,7 +585,7 @@ class TrendCanvas(tk.Canvas):
 
         plot_left, plot_right = left + 96, right - 110
         plot_top, plot_bottom = top + 62, bottom - 46
-        low, high = _padded_range(lines["평균"].to_numpy(), padding=0.35, include_zero=True)
+        low, high = self.average_scale or average_range(lines["평균"])
         y = lambda value: _map(value, low, high, plot_top, plot_bottom)
         xs = self._point_xs(plot_left, plot_right)
 
