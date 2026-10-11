@@ -243,6 +243,37 @@ def cycle_header_items(
     return items
 
 
+def render_header_items(
+    frame: ttk.Frame,
+    items: list[tuple[str, str, str]],
+    palette: dict[str, str],
+    font_family: str,
+) -> None:
+    """Lay ``cycle_header_items`` out in ``frame`` as a caption row over a value row."""
+    for child in frame.winfo_children():
+        child.destroy()
+    background, text, muted = palette["window"], palette["text"], palette["muted"]
+    tones = {
+        tone: readable_text_color(color, background, text)
+        for tone, color in HEADER_TONE_COLORS.items()
+    }
+    for column, (caption, value, tone) in enumerate(items):
+        # A signal's color marks its caption; elsewhere it marks the value.
+        on_caption = tone in SIGNAL_TONES
+        ttk.Label(
+            frame,
+            text=caption,
+            font=(font_family, 8, "bold" if on_caption else "normal"),
+            foreground=tones[tone] if on_caption else muted,
+        ).grid(row=0, column=column, sticky="w", padx=(0, 24))
+        ttk.Label(
+            frame,
+            text=value,
+            font=(font_family, 10, "normal" if tone == "muted" else "bold"),
+            foreground=text if on_caption else tones.get(tone, muted if tone == "muted" else text),
+        ).grid(row=1, column=column, sticky="w", padx=(0, 24))
+
+
 @dataclass(frozen=True)
 class Panel:
     name: str
@@ -337,12 +368,6 @@ class ChartPreviewWindow(tk.Toplevel):
 
         self.status_var = tk.StringVar(value="차트 데이터를 준비해 주세요.")
         self._info_items: list[tuple[str, str, str]] = []
-        self.hover_var = tk.StringVar(
-            value=(
-                "방향키 ←·→: 이전·다음 기록  |  휠: 확대·축소  |  "
-                "드래그: 좌우 이동  |  더블클릭: 선택 사이클 전체 보기"
-            )
-        )
         self.header_frame = ttk.Frame(self)
         self.header_frame.pack(fill="x")
         ttk.Label(
@@ -386,13 +411,8 @@ class ChartPreviewWindow(tk.Toplevel):
         )
         self._position_header_controls()
         # The record's row from the signal history table, as captioned values.
-        self.info_frame = ttk.Frame(self, padding=(10, 0, 10, 2))
+        self.info_frame = ttk.Frame(self, padding=(10, 0, 10, 8))
         self.info_frame.pack(fill="x")
-        ttk.Label(
-            self,
-            textvariable=self.hover_var,
-            padding=(10, 2, 10, 7),
-        ).pack(fill="x")
         self.signal_trend_button.lift()
 
         self.chart_area = ttk.Frame(self)
@@ -519,7 +539,13 @@ class ChartPreviewWindow(tk.Toplevel):
 
     def _show_in_signal_trend(self, window) -> None:
         window.show(
-            self.ticker, self.data, self.cycle, self.navigation_index, self.navigation_total
+            self.ticker,
+            self.data,
+            self.cycle,
+            self.navigation_index,
+            self.navigation_total,
+            heading=self.status_var.get(),
+            header_items=self._info_items,
         )
 
     def _request_navigation(self, direction: int) -> str:
@@ -560,30 +586,7 @@ class ChartPreviewWindow(tk.Toplevel):
             window.set_theme(self.theme_mode)
 
     def _render_info(self) -> None:
-        """Lay the record's values out as a caption row over a value row."""
-        for child in self.info_frame.winfo_children():
-            child.destroy()
-        background, text = self.palette["window"], self.palette["text"]
-        muted = self.palette["muted"]
-        tones = {
-            tone: readable_text_color(color, background, text)
-            for tone, color in HEADER_TONE_COLORS.items()
-        }
-        for column, (caption, value, tone) in enumerate(self._info_items):
-            # A signal's color marks its caption; elsewhere it marks the value.
-            on_caption = tone in SIGNAL_TONES
-            ttk.Label(
-                self.info_frame,
-                text=caption,
-                font=(self.ui_font_family, 8, "bold" if on_caption else "normal"),
-                foreground=tones[tone] if on_caption else muted,
-            ).grid(row=0, column=column, sticky="w", padx=(0, 24))
-            ttk.Label(
-                self.info_frame,
-                text=value,
-                font=(self.ui_font_family, 10, "normal" if tone == "muted" else "bold"),
-                foreground=text if on_caption else tones.get(tone, muted if tone == "muted" else text),
-            ).grid(row=1, column=column, sticky="w", padx=(0, 24))
+        render_header_items(self.info_frame, self._info_items, self.palette, self.ui_font_family)
 
     def _toggle_benchmark(self) -> None:
         if self.benchmark_visible and not self.benchmark_data.empty:
@@ -763,9 +766,8 @@ class ChartPreviewWindow(tk.Toplevel):
         self._drag_origin = None
 
         name = f" · {company}" if company and company.upper() != self.ticker else ""
-        if rank_text:
-            name += f" · {rank_text}"
-        self.status_var.set(f"{self.ticker}{name}")
+        rank = f"{rank_text} · " if rank_text else ""
+        self.status_var.set(f"{rank}{self.ticker}{name}")
         self._info_items = cycle_header_items(cycle, chart_strength_summary, sp500_summary)
         self._render_info()
         if sp500_data is not None and not sp500_data.empty:
@@ -1531,7 +1533,6 @@ class ChartPreviewWindow(tk.Toplevel):
         self._draw_panel_hover_values(panels, row)
         self._draw_crosshair_date(x, panels[-1].bottom, date)
         self._draw_comparison_crosshair(pd.Timestamp(self.data.index[position]))
-        self.hover_var.set(f"{date}  |  십자선 수치는 각 보조지표 제목 옆에 표시됩니다.")
 
     def _on_comparison_motion(self, event) -> None:
         if not self.benchmark_visible or self.benchmark_data.empty or self._drag_origin is not None:
@@ -1691,7 +1692,10 @@ class ChartPreviewWindow(tk.Toplevel):
     def _draw_panel_hover_values(self, panels: list[Panel], row: pd.Series) -> None:
         self.canvas.delete("panel_hover_value")
         ma_styles = moving_average_styles(self.theme_mode)
+        # The week the values belong to: under the crosshair, or the rightmost one.
+        week = [] if pd.isna(row.name) else [("", _date_text(row.name), self.palette["text"], False)]
         price_values = [
+            *week,
             ("O", row["Open"], self.palette["muted"], False),
             ("H", row["High"], CANDLE_UP_COLOR, False),
             ("L", row["Low"], CANDLE_DOWN_COLOR, False),
@@ -1745,7 +1749,10 @@ class ChartPreviewWindow(tk.Toplevel):
         for panel, tag_prefix, values in specifications:
             x = left + 16 + self.panel_title_font.measure(panel.name)
             for label, value, color, compact in values:
-                formatted = _compact_number(value) if compact else _number(value)
+                if isinstance(value, str):
+                    formatted = value
+                else:
+                    formatted = _compact_number(value) if compact else _number(value)
                 text = f"{label} {formatted}".strip()
                 self.canvas.create_text(
                     x,
@@ -1784,12 +1791,7 @@ class ChartPreviewWindow(tk.Toplevel):
     ) -> None:
         if visible.empty:
             return
-        row = visible.iloc[-1]
-        date = visible.index[-1].strftime("%Y-%m-%d")
-        self._draw_panel_hover_values(panels, row)
-        self.hover_var.set(
-            f"{date}  |  현재 화면의 가장 오른쪽 주봉 수치"
-        )
+        self._draw_panel_hover_values(panels, visible.iloc[-1])
 
     def _on_mousewheel(self, event) -> None:
         if self.data.empty or event.delta == 0:

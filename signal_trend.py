@@ -14,6 +14,7 @@ from tkinter import ttk
 import numpy as np
 import pandas as pd
 
+from chart_preview import render_header_items
 from market_context import SP500_NAME, SP500_TICKER, load_sp500_context
 from ui_theme import configure_ui_fonts, normalize_theme, theme_palette
 
@@ -190,7 +191,7 @@ class SignalTrendWindow(tk.Toplevel):
         self.configure(background=theme_palette(self.theme_mode)["window"])
         self.title("신호 지점 흐름")
         self.protocol("WM_DELETE_WINDOW", self._close)
-        self.geometry("1240x700")
+        self.geometry("1240x750")
         self.minsize(820, 560)
 
         self.status_var = tk.StringVar(value="")
@@ -201,7 +202,7 @@ class SignalTrendWindow(tk.Toplevel):
         ttk.Label(
             header,
             textvariable=self.status_var,
-            font=(self.ui_font_family, 11, "bold"),
+            font=(self.ui_font_family, 12, "bold"),
             padding=(10, 7, 10, 4),
         ).pack(side="left")
         self.benchmark_button = ttk.Button(
@@ -223,6 +224,10 @@ class SignalTrendWindow(tk.Toplevel):
         self.previous_button.pack(side="right", pady=(5, 2))
         self.bind("<Left>", lambda _event: self._request_navigation(-1))
         self.bind("<Right>", lambda _event: self._request_navigation(1))
+        # The same record values as the chart preview's header.
+        self.info_frame = ttk.Frame(self.primary_frame, padding=(10, 0, 10, 8))
+        self.info_frame.pack(fill="x")
+        self.header_items: list[tuple[str, str, str]] = []
         self.canvas = TrendCanvas(self.primary_frame, self.ui_font_family, self.theme_mode)
         self.canvas.pack(fill="both", expand=True)
 
@@ -258,15 +263,17 @@ class SignalTrendWindow(tk.Toplevel):
         cycle: pd.Series | None,
         navigation_index: int | None = None,
         navigation_total: int = 0,
+        heading: str = "",
+        header_items: list[tuple[str, str, str]] | None = None,
     ) -> None:
+        """Show one record; ``heading`` and ``header_items`` fill the header."""
         self._set_navigation_state(navigation_index, navigation_total)
         self.ticker = ticker
         self.data = data
         self.points = signal_points(data, cycle)
-        dates = "  ·  ".join(
-            f"{label} {row['Date']:%Y-%m-%d}" for label, row in self.points.iterrows()
-        )
-        self.status_var.set(f"{ticker}  |  {dates or '신호 지점 없음'}")
+        self.status_var.set(heading or ticker)
+        self.header_items = list(header_items or [])
+        self._render_header()
         self.title(f"{ticker} · 신호 지점 흐름")
         self._ensure_benchmark()
         self._show_charts()
@@ -275,6 +282,11 @@ class SignalTrendWindow(tk.Toplevel):
             self._navigating = False
             self.lift()
             self.focus_force()
+
+    def _render_header(self) -> None:
+        render_header_items(
+            self.info_frame, self.header_items, theme_palette(self.theme_mode), self.ui_font_family
+        )
 
     def _close(self) -> None:
         self.destroy()
@@ -302,6 +314,7 @@ class SignalTrendWindow(tk.Toplevel):
     def set_theme(self, mode: str) -> None:
         self.theme_mode = normalize_theme(mode)
         self.configure(background=theme_palette(self.theme_mode)["window"])
+        self._render_header()
         self.canvas.set_theme(self.theme_mode)
         self.benchmark_canvas.set_theme(self.theme_mode)
 
@@ -324,7 +337,9 @@ class SignalTrendWindow(tk.Toplevel):
             width = min(self.winfo_screenwidth(), width * 2)
             x = max(0, min(self.winfo_x(), self.winfo_screenwidth() - width))
             self.geometry(f"{width}x{height}+{x}+{self.winfo_y()}")
-        self.benchmark_header.configure(height=self.header.winfo_height())
+        self.benchmark_header.configure(
+            height=self.header.winfo_height() + self.info_frame.winfo_height()
+        )
         self.benchmark_frame.configure(width=width // 2)
         self.benchmark_frame.pack_propagate(False)
         self.benchmark_frame.pack(side="right", fill="both")
