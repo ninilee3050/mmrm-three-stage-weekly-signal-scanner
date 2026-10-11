@@ -6,7 +6,7 @@ import pytest
 from signal_trend import (
     MODE_CHANGE,
     MODE_POSITION,
-    TREND_COLUMNS,
+    POINT_COLUMNS,
     change_from_first,
     range_positions,
     signal_points,
@@ -24,6 +24,8 @@ def weekly_data(weeks: int = 60) -> pd.DataFrame:
         {
             "Close": 100 + steps,  # 100 .. 159
             "Volume": 1_000_000 * (1 + steps),
+            "Volume_MA_50": 1_000_000 * (1 + steps / 2),
+            "Momentum": steps - 10,
             "MACD": steps - 30,  # crosses zero
             "RSI": 40 + steps / 2,
             "MFI": 50.0,  # flat: has no range to scale by
@@ -49,7 +51,9 @@ def test_points_are_the_indicator_values_on_each_signal_week() -> None:
     assert list(points.index) == ["1차", "2차", "3차"]
     assert list(points["Close"]) == [155.0, 157.0, 159.0]
     assert points.loc["2차", "Date"] == data.index[57]
-    assert list(points.columns) == ["Date", *TREND_COLUMNS]
+    assert list(points.columns) == ["Date", *POINT_COLUMNS]
+    # The moving baseline is read on the same weeks as the indicator.
+    assert points.loc["1차", "Volume_MA_50"] == 1_000_000 * (1 + 55 / 2)
 
 
 def test_signals_that_have_not_happened_are_left_out() -> None:
@@ -92,7 +96,7 @@ def test_average_skips_indicators_without_a_value() -> None:
     position = trend_lines(data, points, MODE_POSITION)
     change = trend_lines(data, points, MODE_CHANGE)
 
-    # MFI is flat, so the average is over the four indicators that moved.
+    # MFI is flat, so the average is over the five indicators that moved.
     assert position.loc["3차", "평균"] == pytest.approx(100.0)
     assert change["평균"].tolist() == pytest.approx([0.0, 2 / 56 * 100, 4 / 56 * 100])
 

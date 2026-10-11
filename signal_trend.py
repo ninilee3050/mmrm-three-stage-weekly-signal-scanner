@@ -1,7 +1,7 @@
 """Signal-point trend view (experimental).
 
-Takes one cycle's 1차/2차/3차 weeks and compares how the close, volume, MACD,
-RSI and MFI moved between them, plus the average of those moves.  Opened from
+Takes one cycle's 1차/2차/3차 weeks and compares how the close, volume,
+momentum, MACD, RSI and MFI moved between them, plus the average of those moves.  Opened from
 a temporary button in the chart preview; kept in its own module until its
 final place in the UI is decided.
 """
@@ -23,16 +23,22 @@ SIGNAL_POINTS = (
     ("3차", "ThirdDecisionDate", "#dc2626"),
 )
 SIGNAL_COLORS = {label: color for label, _, color in SIGNAL_POINTS}
-# (name, data column, line color, show value in K/M/B, fixed 0-100 scale)
+# (name, data column, line color, show value in K/M/B, fixed 0-100 scale,
+#  baseline: a fixed level or the data column that holds it, baseline name)
 # Colors stay clear of the green/amber/red that mark the signals.
 TREND_INDICATORS = (
-    ("종가", "Close", "#3b82f6", False, False),
-    ("거래량", "Volume", "#94a3b8", True, False),
-    ("MACD", "MACD", "#a855f7", False, False),
-    ("RSI", "RSI", "#06b6d4", False, True),
-    ("MFI", "MFI", "#ec4899", False, True),
+    ("종가", "Close", "#3b82f6", False, False, None, ""),
+    ("거래량", "Volume", "#94a3b8", True, False, "Volume_MA_50", "50주 평균"),
+    ("Momentum", "Momentum", "#c08457", False, False, 0.0, "0"),
+    ("MACD", "MACD", "#a855f7", False, False, 0.0, "0"),
+    ("RSI", "RSI", "#06b6d4", False, True, 50.0, "50"),
+    ("MFI", "MFI", "#ec4899", False, True, 50.0, "50"),
 )
-TREND_COLUMNS = [column for _, column, _, _, _ in TREND_INDICATORS]
+TREND_COLUMNS = [indicator[1] for indicator in TREND_INDICATORS]
+BASELINE_COLUMNS = [
+    indicator[5] for indicator in TREND_INDICATORS if isinstance(indicator[5], str)
+]
+POINT_COLUMNS = [*TREND_COLUMNS, *BASELINE_COLUMNS]
 RANGE_LOOKBACK_WEEKS = 52
 SCALE_STEP = 25
 OSCILLATOR_GUIDES = (30.0, 70.0)
@@ -63,8 +69,8 @@ def signal_points(data: pd.DataFrame, cycle: pd.Series | None) -> pd.DataFrame:
             if position >= len(index):
                 continue
             row = data.iloc[position]
-            rows[label] = {"Date": index[position], **{c: row[c] for c in TREND_COLUMNS}}
-    return pd.DataFrame.from_dict(rows, orient="index", columns=["Date", *TREND_COLUMNS])
+            rows[label] = {"Date": index[position], **{c: row[c] for c in POINT_COLUMNS}}
+    return pd.DataFrame.from_dict(rows, orient="index", columns=["Date", *POINT_COLUMNS])
 
 
 def range_bounds(
@@ -165,7 +171,7 @@ class SignalTrendWindow(tk.Toplevel):
         self.palette = theme_palette(self.theme_mode)
         self.configure(background=self.palette["window"])
         self.title("신호 지점 흐름 (임시)")
-        self.geometry("1100x700")
+        self.geometry("1240x700")
         self.minsize(820, 560)
 
         self.status_var = tk.StringVar(value="")
@@ -240,12 +246,12 @@ class SignalTrendWindow(tk.Toplevel):
         )
         self._fractions = time_fractions(self.points["Date"])
         low, high = range_bounds(self.data, self.points)
-        for number, (name, column, color, compact, fixed_scale) in enumerate(TREND_INDICATORS):
+        for number, indicator in enumerate(TREND_INDICATORS):
+            column, fixed_scale = indicator[1], indicator[4]
             left = margin + number * (small_width + gap)
             scale = (0.0, 100.0) if fixed_scale else (float(low[column]), float(high[column]))
             self._draw_indicator_panel(
-                (left, margin, left + small_width, small_bottom),
-                name, column, color, compact, scale, fixed_scale,
+                (left, margin, left + small_width, small_bottom), indicator, scale
             )
         self._draw_combined_panel((margin, small_bottom + gap, width - margin, height - margin))
 
@@ -300,20 +306,31 @@ class SignalTrendWindow(tk.Toplevel):
             self._text(x, y, text, "s", SIGNAL_COLORS[label], bold=True)
 
     def _draw_indicator_panel(
-        self, box: tuple[float, float, float, float], name: str, column: str, color: str,
-        compact: bool, scale: tuple[float, float], fixed_scale: bool,
+        self, box: tuple[float, float, float, float], indicator: tuple,
+        scale: tuple[float, float],
     ) -> None:
         """One indicator's signal points on a scale that does not exaggerate.
 
         The oscillators use their full 0-100 scale; the others use the range
-        of the past year, so a small move looks small.
+        of the past year, so a small move looks small.  A dashed baseline
+        shows which side of its reference level each point is on.
         """
+        name, column, color, compact, fixed_scale, baseline, baseline_name = indicator
         left, top, right, bottom = box
         muted = self.palette["chart_text"]
         self._draw_frame(box, name, color)
+        if baseline is None:
+            baseline_values = []
+        elif isinstance(baseline, str):
+            baseline_values = self.points[baseline].astype(float).tolist()
+        else:
+            baseline_values = [float(baseline)] * len(self.points)
         low, high = scale
         if not np.isfinite([low, high]).all() or high <= low:
             low, high = _padded_range(self.points[column].to_numpy(), padding=0.25)
+        # The baseline must be on the scale even when the year never touched it.
+        finite_baseline = [value for value in baseline_values if np.isfinite(value)]
+        low, high = min([low, *finite_baseline]), max([high, *finite_baseline])
         plot_left, plot_right = left + 30, right - 52
         plot_top, plot_bottom = top + 48, bottom - 48
         y = lambda value: _map(value, low, high, plot_top, plot_bottom)
@@ -329,15 +346,18 @@ class SignalTrendWindow(tk.Toplevel):
             for guide in OSCILLATOR_GUIDES:
                 self.canvas.create_line(
                     left + 8, y(guide), right - 8, y(guide),
-                    fill=self.palette["chart_grid"], dash=(3, 3),
+                    fill=self.palette["chart_grid"], dash=(2, 4),
                 )
                 self._text(right - 8, y(guide) - 2, f"{guide:.0f}", "se", muted, size=8)
-        self._text(
-            right - 8, top + 7, "0~100 눈금" if fixed_scale else "최근 1년 범위", "ne", muted, size=8
-        )
+        note = "0~100 눈금" if fixed_scale else "최근 1년 범위"
+        if baseline_name:
+            # Named up here: inside the plot the name would sit on the points.
+            note += f" · 점선 {baseline_name}"
+        self._text(right - 8, top + 7, note, "ne", muted, size=8)
 
         values = self.points[column].astype(float).tolist()
         xs = self._point_xs(plot_left, plot_right)
+        self._draw_baseline(left + 8, right - 8, xs, baseline_values, y)
         ys = [None if pd.isna(value) else y(value) for value in values]
         self._draw_points_line(xs, ys, color, width=2.5, radius=5, signal_colored=True)
         for number, (x, point_y, value) in enumerate(zip(xs, ys, values)):
@@ -351,6 +371,19 @@ class SignalTrendWindow(tk.Toplevel):
                 "n" if below else "s", self.palette["text"],
             )
         self._draw_signal_labels(xs, bottom - 6, with_dates=False)
+
+    def _draw_baseline(self, left: float, right: float, xs: list[float],
+                       values: list[float], y) -> None:
+        """Dashed reference level across the panel, following it if it moves."""
+        drawn = [(x, y(value)) for x, value in zip(xs, values) if np.isfinite(value)]
+        if not drawn:
+            return
+        muted = self.palette["chart_text"]
+        path = [(left, drawn[0][1]), *drawn, (right, drawn[-1][1])]
+        self.canvas.create_line(
+            *[coordinate for point in path for coordinate in point],
+            fill=muted, dash=(5, 3),
+        )
 
     def _draw_combined_panel(self, box: tuple[float, float, float, float]) -> None:
         left, top, right, bottom = box
@@ -392,7 +425,7 @@ class SignalTrendWindow(tk.Toplevel):
         # The average is the main line; the indicators stay faint behind it
         # and are named at their right end instead of in a legend.
         end_ys, end_names, end_colors = [], [], []
-        for name, column, color, _, _ in TREND_INDICATORS:
+        for name, column, color, *_ in TREND_INDICATORS:
             faint = _blend(color, panel_color, INDICATOR_LINE_OPACITY)
             ys = [None if pd.isna(value) else y(value) for value in indicators[column]]
             self._draw_points_line(xs, ys, faint, width=1.3, radius=2.5, signal_colored=False)
