@@ -1,8 +1,8 @@
 """Signal-point trend view.
 
 Takes one cycle's 1차/2차/3차 weeks and compares how the close, volume,
-momentum, MACD, RSI and MFI moved between them, plus the average of those moves.  Opened in
-its own window from a button in the chart preview.
+momentum, MACD, RSI and MFI moved between them, plus the average of those
+moves.  Opened in its own window from a button in the chart preview.
 """
 
 from __future__ import annotations
@@ -320,10 +320,11 @@ class SignalTrendWindow(tk.Toplevel):
 
     def _request_row_navigation(self, direction: int) -> str:
         """Move to the stock above or below in the scanner table that is open."""
-        if self._on_navigate_rows_callback is not None:
+        if self._on_navigate_rows_callback is not None and self._on_navigate_rows_callback(
+            direction
+        ):
             # The stock loads in the background; keep the keyboard here when it arrives.
             self._refocus_until = time.monotonic() + ROW_NAVIGATION_REFOCUS_SECONDS
-            self._on_navigate_rows_callback(direction)
         return "break"
 
     def _set_navigation_state(self, index: int | None, total: int) -> None:
@@ -359,8 +360,11 @@ class SignalTrendWindow(tk.Toplevel):
         width, height = self.winfo_width(), self.winfo_height()
         if self.state() == "normal":
             # Double the window so the stock keeps its width, as far as the screen allows.
-            width = min(self.winfo_screenwidth(), width * 2)
-            x = max(0, min(self.winfo_x(), self.winfo_screenwidth() - width))
+            # The virtual desktop spans every monitor, not only the primary one.
+            desktop_left = self.winfo_vrootx()
+            desktop_right = desktop_left + self.winfo_vrootwidth()
+            width = min(desktop_right - desktop_left, width * 2)
+            x = max(desktop_left, min(self.winfo_x(), desktop_right - width))
             self.geometry(f"{width}x{height}+{x}+{self.winfo_y()}")
         self.benchmark_header.configure(
             height=self.header.winfo_height() + self.info_frame.winfo_height()

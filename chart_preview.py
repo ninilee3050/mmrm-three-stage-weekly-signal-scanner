@@ -179,20 +179,6 @@ def format_cycle_return(value, status) -> str:
     return "-"
 
 
-def cycle_return_summary(cycle: pd.Series | None) -> str:
-    """Build the compact 3/6/9/12-month result shown in the chart header."""
-    if cycle is None:
-        return ""
-    statuses = {str(cycle.get(status_column, "")) for _, _, status_column in RETURN_HORIZONS}
-    if statuses == {"해당 없음"}:
-        # Failed or discarded cycles have no returns to show.
-        return ""
-    return " · ".join(
-        f"{label} {format_cycle_return(cycle.get(value_column), cycle.get(status_column))}"
-        for label, value_column, status_column in RETURN_HORIZONS
-    )
-
-
 def _summary_fields(summary: str) -> dict[str, str]:
     """Split "이름: 값  |  이름: 값" text; parts without a name are dropped."""
     fields: dict[str, str] = {}
@@ -278,7 +264,12 @@ def benchmark_header_items(
         (f"{label} 주 종가", _number(close(found)), tone)
         for (label, _, _), found, tone in zip(SIGNAL_STYLES, positions, SIGNAL_TONES)
     ]
+    # The same week the record's own "S&P500 상태" refers to: now for a record
+    # still waiting, otherwise its latest signal.
+    waiting = cycle is not None and "대기" in str(cycle.get("Outcome", ""))
     latest = next((found for found in reversed(positions) if found is not None), None)
+    if (waiting or cycle is None) and not benchmark.empty:
+        latest = len(index) - 1
     state, state_tone = "-", "muted"
     if latest is not None and not pd.isna(benchmark["MA_50"].iloc[latest]):
         above = close(latest) >= float(benchmark["MA_50"].iloc[latest])
@@ -291,10 +282,11 @@ def benchmark_header_items(
         status = str(cycle.get(status_column, "")) if cycle is not None else ""
         if status != "확정":
             text = status if status and status != "nan" else "-"
-        elif buy is None or buy + weeks >= len(index) or not close(buy):
+        elif buy is None or buy + weeks >= len(index):
             text = "데이터 없음"
         else:
-            text = f"{(close(buy + weeks) / close(buy) - 1) * 100:+.2f}%"
+            change = (close(buy + weeks) / close(buy) - 1) * 100 if close(buy) else float("nan")
+            text = f"{change:+.2f}%" if np.isfinite(change) else "데이터 없음"
         tone = "up" if text.startswith("+") else "down" if text[:1] == "-" and len(text) > 1 else "muted"
         items.append((f"{label.replace('M', '개월')}후 수익률", text, tone))
     return items
@@ -589,7 +581,7 @@ class ChartPreviewWindow(tk.Toplevel):
             self,
             self.theme_mode,
             on_navigate=self._request_navigation,
-            on_navigate_rows=self._request_row_navigation,
+            on_navigate_rows=self.move_scanner_row,
             on_close=self._signal_trend_closed,
         )
         self.signal_trend_button.configure(text=SIGNAL_TREND_CLOSE_TEXT)
@@ -609,7 +601,10 @@ class ChartPreviewWindow(tk.Toplevel):
         window.update_idletasks()
         border = self.winfo_rootx() - self.winfo_x()
         x = self.winfo_rootx() + self.winfo_width() + border
-        x = max(0, min(x, self.winfo_screenwidth() - window.winfo_width() - 2 * border))
+        # The virtual desktop spans every monitor, not only the primary one.
+        desktop_left = self.winfo_vrootx()
+        desktop_right = desktop_left + self.winfo_vrootwidth()
+        x = max(desktop_left, min(x, desktop_right - window.winfo_width() - 2 * border))
         window.geometry(f"+{x}+{self.winfo_y()}")
 
     def _refresh_signal_trend(self) -> None:
@@ -639,10 +634,14 @@ class ChartPreviewWindow(tk.Toplevel):
         return "break"
 
     def _request_row_navigation(self, direction: int) -> str:
-        """Move to the stock above or below in the scanner table that is open."""
-        if self._on_navigate_rows_callback is not None:
-            self._on_navigate_rows_callback(-1 if direction < 0 else 1)
+        self.move_scanner_row(direction)
         return "break"
+
+    def move_scanner_row(self, direction: int) -> bool:
+        """Go to the stock above or below in the open scanner table; True if it moved."""
+        if self._on_navigate_rows_callback is None:
+            return False
+        return bool(self._on_navigate_rows_callback(-1 if direction < 0 else 1))
 
     def _set_navigation_state(self, index: int | None, total: int) -> None:
         self.navigation_index = index
@@ -668,6 +667,7 @@ class ChartPreviewWindow(tk.Toplevel):
         self.comparison_canvas.configure(background=self.palette["chart_background"])
         self._schedule_redraw()
         self._render_info()
+        self.controls_help.configure(foreground=self.palette["muted"])
         window = getattr(self, "signal_trend_window", None)
         if window is not None and window.winfo_exists():
             window.set_theme(self.theme_mode)
