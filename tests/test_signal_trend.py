@@ -96,18 +96,6 @@ def test_average_skips_indicators_without_a_value() -> None:
     assert change["평균"].tolist() == pytest.approx([0.0, 2 / 56 * 100, 4 / 56 * 100])
 
 
-def test_spread_is_the_gap_between_the_highest_and_lowest_indicator() -> None:
-    data = weekly_data()
-    data["RSI"] = 40.0
-    data.loc[data.index[59], "RSI"] = 20.0  # falls while the others rise
-    points = signal_points(data, cycle(data, 55, 57, 59))
-
-    change = trend_lines(data, points)
-
-    assert change.loc["1차", "벌어짐"] == 0
-    assert change.loc["3차", "벌어짐"] == pytest.approx(4 / 56 * 100 + 100)
-
-
 def test_points_are_spaced_by_elapsed_weeks() -> None:
     dates = pd.to_datetime(["2026-06-29", "2026-09-07", "2026-10-05"])
 

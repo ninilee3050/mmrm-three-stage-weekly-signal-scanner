@@ -107,16 +107,9 @@ def change_from_first(positions: pd.DataFrame) -> pd.DataFrame:
 
 
 def trend_lines(data: pd.DataFrame, points: pd.DataFrame) -> pd.DataFrame:
-    """Each indicator's move since the first signal, their average and spread.
-
-    "벌어짐" is the gap between the highest and lowest indicator: a small
-    average with a large spread means the indicators disagree.
-    """
+    """Each indicator's move since the first signal, with their average in "평균"."""
     lines = change_from_first(range_positions(data, points))
-    return lines.assign(
-        평균=lines.mean(axis=1, skipna=True),
-        벌어짐=lines.max(axis=1, skipna=True) - lines.min(axis=1, skipna=True),
-    )
+    return lines.assign(평균=lines.mean(axis=1, skipna=True))
 
 
 def weeks_between(dates) -> list[int]:
@@ -226,16 +219,6 @@ class SignalTrendWindow(tk.Toplevel):
               bold: bool = False) -> int:
         font = (self.ui_font_family, size, "bold") if bold else (self.ui_font_family, size)
         return self.canvas.create_text(x, y, text=text, anchor=anchor, fill=color, font=font)
-
-    def _text_on_panel(self, x: float, y: float, text: str, anchor: str, color: str,
-                       size: int = 9, bold: bool = False) -> None:
-        """Text on a panel-colored patch, so lines behind it do not cut through."""
-        item = self._text(x, y, text, anchor, color, size, bold)
-        left, top, right, bottom = self.canvas.bbox(item)
-        self.canvas.create_rectangle(
-            left - 3, top, right + 3, bottom, fill=self.palette["chart_panel"], outline=""
-        )
-        self.canvas.tag_raise(item)
 
     def _draw_frame(self, box: tuple[float, float, float, float], title: str, color: str) -> None:
         left, top, right, bottom = box
@@ -382,20 +365,14 @@ class SignalTrendWindow(tk.Toplevel):
             self._text(left + 40, y(tick), _change_text(tick), "e", muted, size=8)
         self.canvas.create_line(left + 46, y(0), right - 100, y(0), fill=muted, dash=(4, 3))
 
-        # Only the average is drawn; "벌어짐" tells how far the indicators spread.
         average_ys = [None if pd.isna(value) else y(value) for value in lines["평균"]]
         self._draw_points_line(xs, average_ys, average_color, width=4, radius=6, signal_colored=False)
         if len(xs) > 1 and average_ys[-1] is not None:
             self._text(xs[-1] + 14, average_ys[-1], "평균", "w", average_color, bold=True)
 
-        for x, point_y, value, spread in zip(xs, average_ys, lines["평균"], lines["벌어짐"]):
-            if point_y is None:
-                continue
-            self._text_on_panel(
-                x, point_y - 26, _change_text(value), "s", average_color, 11, True
-            )
-            if spread > 0:
-                self._text_on_panel(x, point_y - 12, f"벌어짐 {spread:.0f}", "s", muted, size=8)
+        for x, point_y, value in zip(xs, average_ys, lines["평균"]):
+            if point_y is not None:
+                self._text(x, point_y - 12, _change_text(value), "s", average_color, 11, True)
 
         self._draw_signal_labels(xs, bottom - 8, with_dates=True)
         for weeks, earlier, later in zip(weeks_between(self.points["Date"]), xs, xs[1:]):
