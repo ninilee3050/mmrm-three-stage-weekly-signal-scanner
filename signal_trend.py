@@ -168,9 +168,11 @@ def week_line_xs(xs: list[float], weeks: list[int], min_spacing: float = WEEK_LI
 class SignalTrendWindow(tk.Toplevel):
     """Signal-point trend of one record, with the S&P 500 beside it on request."""
 
-    def __init__(self, master: tk.Misc, theme_mode: str = "light") -> None:
+    def __init__(self, master: tk.Misc, theme_mode: str = "light", on_navigate=None) -> None:
         super().__init__(master)
         self.ui_font_family = configure_ui_fonts(self)
+        self._on_navigate_callback = on_navigate
+        self._navigating = False
         self.theme_mode = normalize_theme(theme_mode)
         self.configure(background=theme_palette(self.theme_mode)["window"])
         self.title("신호 지점 흐름 (임시)")
@@ -192,6 +194,21 @@ class SignalTrendWindow(tk.Toplevel):
             header, text=BENCHMARK_OPEN_TEXT, command=self._toggle_benchmark
         )
         self.benchmark_button.pack(side="right", padx=(0, 10), pady=(5, 2))
+        # The same previous/next controls as the chart preview, which does the moving.
+        self.next_button = ttk.Button(
+            header, text="다음 →", command=lambda: self._request_navigation(1), state="disabled"
+        )
+        self.next_button.pack(side="right", padx=(0, 16), pady=(5, 2))
+        self.navigation_var = tk.StringVar(value="- / -")
+        ttk.Label(header, textvariable=self.navigation_var, anchor="center", width=8).pack(
+            side="right"
+        )
+        self.previous_button = ttk.Button(
+            header, text="← 이전", command=lambda: self._request_navigation(-1), state="disabled"
+        )
+        self.previous_button.pack(side="right", pady=(5, 2))
+        self.bind("<Left>", lambda _event: self._request_navigation(-1))
+        self.bind("<Right>", lambda _event: self._request_navigation(1))
         self.canvas = TrendCanvas(self.primary_frame, self.ui_font_family, self.theme_mode)
         self.canvas.pack(fill="both", expand=True)
 
@@ -219,7 +236,15 @@ class SignalTrendWindow(tk.Toplevel):
         self.benchmark_error = ""
         self._geometry_before_benchmark = ""
 
-    def show(self, ticker: str, data: pd.DataFrame, cycle: pd.Series | None) -> None:
+    def show(
+        self,
+        ticker: str,
+        data: pd.DataFrame,
+        cycle: pd.Series | None,
+        navigation_index: int | None = None,
+        navigation_total: int = 0,
+    ) -> None:
+        self._set_navigation_state(navigation_index, navigation_total)
         self.data = data
         self.points = signal_points(data, cycle)
         dates = "  ·  ".join(
@@ -229,6 +254,29 @@ class SignalTrendWindow(tk.Toplevel):
         self.title(f"{ticker} · 신호 지점 흐름 (임시)")
         self.canvas.show(data, self.points)
         self._show_benchmark_points()
+        if self._navigating:
+            # The chart preview raised itself to show the record; come back on top.
+            self._navigating = False
+            self.lift()
+            self.focus_force()
+
+    def _request_navigation(self, direction: int) -> str:
+        button = self.previous_button if direction < 0 else self.next_button
+        if self._on_navigate_callback is not None and str(button.cget("state")) != "disabled":
+            self._navigating = True
+            self._on_navigate_callback(direction)
+            self._navigating = False
+        return "break"
+
+    def _set_navigation_state(self, index: int | None, total: int) -> None:
+        if index is None or total <= 0:
+            self.navigation_var.set("- / -")
+            self.previous_button.configure(state="disabled")
+            self.next_button.configure(state="disabled")
+            return
+        self.navigation_var.set(f"{index + 1} / {total}")
+        self.previous_button.configure(state="normal" if index > 0 else "disabled")
+        self.next_button.configure(state="normal" if index < total - 1 else "disabled")
 
     def set_theme(self, mode: str) -> None:
         self.theme_mode = normalize_theme(mode)

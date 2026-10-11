@@ -412,16 +412,24 @@ class ChartPreviewWindow(tk.Toplevel):
 
         window = self.signal_trend_window
         if window is None or not window.winfo_exists():
-            window = self.signal_trend_window = SignalTrendWindow(self, self.theme_mode)
-        window.show(self.ticker, self.data, self.cycle)
+            window = self.signal_trend_window = SignalTrendWindow(
+                self, self.theme_mode, on_navigate=self._request_navigation
+            )
+        self._show_in_signal_trend(window)
         window.deiconify()
         window.lift()
+        window.focus_force()
 
     def _refresh_signal_trend(self) -> None:
         """Keep an open trend window on the record the chart is showing."""
         window = getattr(self, "signal_trend_window", None)
         if window is not None and window.winfo_exists():
-            window.show(self.ticker, self.data, self.cycle)
+            self._show_in_signal_trend(window)
+
+    def _show_in_signal_trend(self, window) -> None:
+        window.show(
+            self.ticker, self.data, self.cycle, self.navigation_index, self.navigation_total
+        )
 
     def _request_navigation(self, direction: int) -> str:
         if direction < 0 and str(self.previous_button.cget("state")) == "disabled":
