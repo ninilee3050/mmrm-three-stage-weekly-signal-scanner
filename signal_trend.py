@@ -381,24 +381,20 @@ class SignalTrendWindow(tk.Toplevel):
             )
             self._text(left + 40, y(tick), _change_text(tick), "e", muted, size=8)
         self.canvas.create_line(left + 46, y(0), right - 100, y(0), fill=muted, dash=(4, 3))
-        # One vertical line per week, with the signal weeks in their own color.
-        for x in week_line_xs(xs, weeks_between(self.points["Date"])):
+        # One vertical line per week, signal weeks included.
+        for x in [*xs, *week_line_xs(xs, weeks_between(self.points["Date"]))]:
             self.canvas.create_line(
                 x, plot_top - 18, x, plot_bottom + 8, fill=self.palette["chart_grid"]
             )
-        for label, x in zip(self.points.index, xs):
-            self.canvas.create_line(
-                x, plot_top - 18, x, plot_bottom + 8, fill=SIGNAL_COLORS[label], dash=(2, 3)
-            )
 
         average_ys = [None if pd.isna(value) else y(value) for value in lines["평균"]]
-        self._draw_points_line(xs, average_ys, average_color, width=4, radius=6, signal_colored=False)
+        self._draw_points_line(xs, average_ys, average_color, width=4, radius=9, signal_colored=True)
         if len(xs) > 1 and average_ys[-1] is not None:
-            self._text(xs[-1] + 14, average_ys[-1], "평균", "w", average_color, bold=True)
+            self._text(xs[-1] + 18, average_ys[-1], "평균", "w", average_color, bold=True)
 
         for x, point_y, value in zip(xs, average_ys, lines["평균"]):
             if point_y is not None:
-                self._text(x, point_y - 12, _change_text(value), "s", average_color, 11, True)
+                self._text(x, point_y - 15, _change_text(value), "s", average_color, 11, True)
 
         self._draw_signal_labels(xs, bottom - 8, with_dates=True)
         for weeks, earlier, later in zip(weeks_between(self.points["Date"]), xs, xs[1:]):
