@@ -46,12 +46,6 @@ OSCILLATOR_GUIDES = (30.0, 70.0)
 MIN_POINT_GAP = 0.18
 RISE_COLOR = "#ef4444"
 FALL_COLOR = "#3b82f6"
-MODE_CHANGE = "change"
-MODE_POSITION = "position"
-MODE_LABELS = {
-    MODE_CHANGE: "1차 대비 변화",
-    MODE_POSITION: "1년 범위 안 위치",
-}
 
 
 def signal_points(data: pd.DataFrame, cycle: pd.Series | None) -> pd.DataFrame:
@@ -112,15 +106,13 @@ def change_from_first(positions: pd.DataFrame) -> pd.DataFrame:
     return positions - positions.iloc[0]
 
 
-def trend_lines(data: pd.DataFrame, points: pd.DataFrame, mode: str) -> pd.DataFrame:
-    """Scaled indicator lines for ``mode``, their average and their spread.
+def trend_lines(data: pd.DataFrame, points: pd.DataFrame) -> pd.DataFrame:
+    """Each indicator's move since the first signal, their average and spread.
 
     "벌어짐" is the gap between the highest and lowest indicator: a small
     average with a large spread means the indicators disagree.
     """
-    lines = range_positions(data, points)
-    if mode == MODE_CHANGE:
-        lines = change_from_first(lines)
+    lines = change_from_first(range_positions(data, points))
     return lines.assign(
         평균=lines.mean(axis=1, skipna=True),
         벌어짐=lines.max(axis=1, skipna=True) - lines.min(axis=1, skipna=True),
@@ -163,7 +155,6 @@ class SignalTrendWindow(tk.Toplevel):
         self.minsize(820, 560)
 
         self.status_var = tk.StringVar(value="")
-        self.mode = MODE_CHANGE
         header = ttk.Frame(self)
         header.pack(fill="x")
         ttk.Label(
@@ -172,9 +163,6 @@ class SignalTrendWindow(tk.Toplevel):
             font=(self.ui_font_family, 11, "bold"),
             padding=(10, 7, 10, 4),
         ).pack(side="left")
-        self.mode_button = ttk.Button(header, command=self._toggle_mode)
-        self.mode_button.pack(side="right", padx=(0, 10), pady=(5, 2))
-        self._update_mode_button()
 
         self.canvas = tk.Canvas(
             self, background=self.palette["chart_background"], highlightthickness=0
@@ -201,15 +189,6 @@ class SignalTrendWindow(tk.Toplevel):
         self.configure(background=self.palette["window"])
         self.canvas.configure(background=self.palette["chart_background"])
         self._redraw()
-
-    def _toggle_mode(self) -> None:
-        self.mode = MODE_POSITION if self.mode == MODE_CHANGE else MODE_CHANGE
-        self._update_mode_button()
-        self._redraw()
-
-    def _update_mode_button(self) -> None:
-        other = MODE_POSITION if self.mode == MODE_CHANGE else MODE_CHANGE
-        self.mode_button.configure(text=f"종합 기준 바꾸기 → {MODE_LABELS[other]}")
 
     def _redraw(self) -> None:
         canvas = self.canvas
@@ -379,24 +358,19 @@ class SignalTrendWindow(tk.Toplevel):
 
     def _draw_combined_panel(self, box: tuple[float, float, float, float]) -> None:
         left, top, right, bottom = box
-        mode = self.mode
         muted = self.palette["chart_text"]
         average_color = self.palette["text"]
-        lines = trend_lines(self.data, self.points, mode)
-        self._draw_frame(box, f"종합 · {MODE_LABELS[mode]}", average_color)
+        lines = trend_lines(self.data, self.points)
+        self._draw_frame(box, "종합 · 1차 대비 변화", average_color)
         self._text(
             right - 8, top + 7,
-            "눈금: 각 지표의 최근 1년 최저~최고를 0~100으로 환산"
-            + ("  ·  1차 신호 때 = 0" if mode == MODE_CHANGE else ""),
+            "1차 신호 때 = 0  ·  여섯 지표가 평균적으로 오르면 +, 내리면 −",
             "ne", muted, size=8,
         )
 
         plot_left, plot_right = left + 96, right - 110
         plot_top, plot_bottom = top + 62, bottom - 46
-        if mode == MODE_POSITION:
-            low, high = 0.0, 100.0
-        else:
-            low, high = _padded_range(lines["평균"].to_numpy(), padding=0.35, include_zero=True)
+        low, high = _padded_range(lines["평균"].to_numpy(), padding=0.35, include_zero=True)
         y = lambda value: _map(value, low, high, plot_top, plot_bottom)
         xs = self._point_xs(plot_left, plot_right)
 
@@ -405,11 +379,8 @@ class SignalTrendWindow(tk.Toplevel):
             self.canvas.create_line(
                 left + 46, y(tick), right - 100, y(tick), fill=self.palette["chart_grid"]
             )
-            self._text(left + 40, y(tick), _scaled_text(tick, mode), "e", muted, size=8)
-        if mode == MODE_CHANGE:
-            self.canvas.create_line(
-                left + 46, y(0), right - 100, y(0), fill=muted, dash=(4, 3)
-            )
+            self._text(left + 40, y(tick), _change_text(tick), "e", muted, size=8)
+        self.canvas.create_line(left + 46, y(0), right - 100, y(0), fill=muted, dash=(4, 3))
 
         # Only the average is drawn; "벌어짐" tells how far the indicators spread.
         average_ys = [None if pd.isna(value) else y(value) for value in lines["평균"]]
@@ -421,7 +392,7 @@ class SignalTrendWindow(tk.Toplevel):
             if point_y is None:
                 continue
             self._text_on_panel(
-                x, point_y - 26, _scaled_text(value, mode), "s", average_color, 11, True
+                x, point_y - 26, _change_text(value), "s", average_color, 11, True
             )
             if spread > 0:
                 self._text_on_panel(x, point_y - 12, f"벌어짐 {spread:.0f}", "s", muted, size=8)
@@ -468,7 +439,7 @@ def _value_text(value: float, compact: bool) -> str:
     return f"{value:.1f}" if absolute >= 10 else f"{value:.2f}"
 
 
-def _scaled_text(value: float, mode: str) -> str:
+def _change_text(value: float) -> str:
     if pd.isna(value):
         return "-"
-    return f"{value:+.0f}" if mode == MODE_CHANGE else f"{value:.0f}"
+    return f"{value + 0.0:+.0f}"  # adding 0.0 turns -0.0 into 0.0

@@ -4,8 +4,6 @@ import pandas as pd
 import pytest
 
 from signal_trend import (
-    MODE_CHANGE,
-    MODE_POSITION,
     POINT_COLUMNS,
     change_from_first,
     range_positions,
@@ -92,11 +90,9 @@ def test_average_skips_indicators_without_a_value() -> None:
     data = weekly_data()
     points = signal_points(data, cycle(data, 55, 57, 59))
 
-    position = trend_lines(data, points, MODE_POSITION)
-    change = trend_lines(data, points, MODE_CHANGE)
+    change = trend_lines(data, points)
 
     # MFI is flat, so the average is over the five indicators that moved.
-    assert position.loc["3차", "평균"] == pytest.approx(100.0)
     assert change["평균"].tolist() == pytest.approx([0.0, 2 / 56 * 100, 4 / 56 * 100])
 
 
@@ -106,7 +102,7 @@ def test_spread_is_the_gap_between_the_highest_and_lowest_indicator() -> None:
     data.loc[data.index[59], "RSI"] = 20.0  # falls while the others rise
     points = signal_points(data, cycle(data, 55, 57, 59))
 
-    change = trend_lines(data, points, MODE_CHANGE)
+    change = trend_lines(data, points)
 
     assert change.loc["1차", "벌어짐"] == 0
     assert change.loc["3차", "벌어짐"] == pytest.approx(4 / 56 * 100 + 100)
