@@ -47,6 +47,8 @@ BENCHMARK_TICKER = SP500_TICKER
 BENCHMARK_NAME = SP500_NAME
 BENCHMARK_OPEN_TEXT = "S&P 500 비교 열기"
 BENCHMARK_CLOSE_TEXT = "S&P 500 비교 닫기"
+OVERLAY_MAX_HEIGHT = 520.0
+OVERLAY_LABEL_GAP = 16.0
 SCALE_STEPS = (25, 10, 5, 2, 1)
 OSCILLATOR_GUIDES = (30.0, 70.0)
 MIN_POINT_GAP = 0.18
@@ -465,23 +467,25 @@ class TrendCanvas(tk.Canvas):
 
     def _draw_points_line(
         self, xs: list[float], ys: list[float | None], color: str, width: float, radius: float,
-        signal_colored: bool,
+        signal_colored: bool, dash: tuple[int, int] | None = None, hollow: bool = False,
     ) -> None:
         """Connect the points that have a value and draw a dot on each.
 
         A rising stretch is red and a falling one blue, as on the candles.
+        ``dash`` and ``hollow`` set a second series apart from the main one.
         """
         drawn = [(x, y) for x, y in zip(xs, ys) if y is not None]
         for (x1, y1), (x2, y2) in zip(drawn, drawn[1:]):
             # Canvas y grows downward, so a smaller y is a higher value.
             segment = RISE_COLOR if y2 < y1 else FALL_COLOR if y2 > y1 else color
-            self.create_line(x1, y1, x2, y2, fill=segment, width=width)
+            self.create_line(x1, y1, x2, y2, fill=segment, width=width, dash=dash)
         for label, x, y in zip(self.points.index, xs, ys):
             if y is None:
                 continue
             fill = SIGNAL_COLORS[label] if signal_colored else color
             self.create_oval(
-                x - radius, y - radius, x + radius, y + radius, fill=fill, outline=fill
+                x - radius, y - radius, x + radius, y + radius,
+                fill=self.palette["chart_panel"] if hollow else fill, outline=fill, width=2,
             )
 
     def _draw_signal_labels(self, xs: list[float], y: float, with_dates: bool) -> None:
@@ -586,21 +590,10 @@ class TrendCanvas(tk.Canvas):
         plot_left, plot_right = left + 96, right - 110
         plot_top, plot_bottom = top + 62, bottom - 46
         low, high = self.average_scale or average_range(lines["평균"])
-        y = lambda value: _map(value, low, high, plot_top, plot_bottom)
         xs = self._point_xs(plot_left, plot_right)
-
-        step = _scale_step(low, high)
-        for tick in np.arange(np.ceil(low / step) * step, high + 0.01, step):
-            self.create_line(
-                left + 46, y(tick), right - 100, y(tick), fill=self.palette["chart_grid"]
-            )
-            self._text(left + 40, y(tick), _change_text(tick), "e", muted, size=8)
-        self.create_line(left + 46, y(0), right - 100, y(0), fill=muted, dash=(4, 3))
-        # One vertical line per week, signal weeks included.
-        for x in [*xs, *week_line_xs(xs, weeks_between(self.points["Date"]))]:
-            self.create_line(
-                x, plot_top - 18, x, plot_bottom + 8, fill=self.palette["chart_grid"]
-            )
+        y = self._draw_change_axes(
+            left + 46, right - 100, plot_top, plot_bottom, low, high, xs
+        )
 
         average_ys = [None if pd.isna(value) else y(value) for value in lines["평균"]]
         self._draw_points_line(xs, average_ys, average_color, width=4, radius=9, signal_colored=True)
@@ -611,9 +604,132 @@ class TrendCanvas(tk.Canvas):
             if point_y is not None:
                 self._text(x, point_y - 15, _change_text(value), "s", average_color, 11, True)
 
+        self._draw_time_labels(xs, bottom)
+
+    def _draw_change_axes(
+        self, left: float, right: float, plot_top: float, plot_bottom: float,
+        low: float, high: float, xs: list[float],
+    ):
+        """Grid of a change panel; returns the value-to-y mapping."""
+        muted = self.palette["chart_text"]
+        y = lambda value: _map(value, low, high, plot_top, plot_bottom)
+        step = _scale_step(low, high)
+        for tick in np.arange(np.ceil(low / step) * step, high + 0.01, step):
+            self.create_line(left, y(tick), right, y(tick), fill=self.palette["chart_grid"])
+            self._text(left - 6, y(tick), _change_text(tick), "e", muted, size=8)
+        self.create_line(left, y(0), right, y(0), fill=muted, dash=(4, 3))
+        # One vertical line per week, signal weeks included.
+        for x in [*xs, *week_line_xs(xs, weeks_between(self.points["Date"]))]:
+            self.create_line(
+                x, plot_top - 18, x, plot_bottom + 8, fill=self.palette["chart_grid"]
+            )
+        return y
+
+    def _draw_time_labels(self, xs: list[float], bottom: float) -> None:
+        """Signal names with dates, and the weeks between them."""
         self._draw_signal_labels(xs, bottom - 8, with_dates=True)
         for weeks, earlier, later in zip(weeks_between(self.points["Date"]), xs, xs[1:]):
-            self._text((earlier + later) / 2, bottom - 9, f"{weeks}주", "s", muted, size=8)
+            self._text(
+                (earlier + later) / 2, bottom - 9, f"{weeks}주", "s",
+                self.palette["chart_text"], size=8,
+            )
+
+
+class OverlayCanvas(TrendCanvas):
+    """The record's average and the S&P 500's average on one panel."""
+
+    def __init__(self, master: tk.Misc, font_family: str, theme_mode: str) -> None:
+        super().__init__(master, font_family, theme_mode)
+        self.name = ""
+        self.benchmark_data = pd.DataFrame()
+
+    def show_overlay(
+        self,
+        name: str,
+        data: pd.DataFrame,
+        points: pd.DataFrame,
+        benchmark_data: pd.DataFrame,
+        message: str = "",
+    ) -> None:
+        """Draw ``points`` of ``data`` with the S&P 500 on the same weeks."""
+        self.name = name
+        self.benchmark_data = benchmark_data
+        self.show(data, points, message)
+
+    def _redraw(self) -> None:
+        self.delete("all")
+        width, height = self.winfo_width(), self.winfo_height()
+        if width < 200 or height < 200:
+            return
+        if self.message or self.points.empty:
+            self.create_text(
+                width / 2,
+                min(height, OVERLAY_MAX_HEIGHT) / 2,
+                text=self.message or "이 기록에는 신호 지점이 없습니다.",
+                fill=self.palette["chart_text"],
+                font=(self.ui_font_family, 11),
+            )
+            return
+        margin = 14.0
+        self._fractions = time_fractions(self.points["Date"])
+        bottom = min(height - margin, margin + OVERLAY_MAX_HEIGHT)
+        self._draw_overlay_panel((margin, margin, width - margin, bottom))
+
+    def _draw_overlay_panel(self, box: tuple[float, float, float, float]) -> None:
+        left, top, right, bottom = box
+        muted = self.palette["chart_text"]
+        text_color = self.palette["text"]
+        stock = trend_lines(self.data, self.points)["평균"]
+        benchmark_points = points_on_dates(self.benchmark_data, self.points["Date"].to_dict())
+        benchmark = trend_lines(self.benchmark_data, benchmark_points)["평균"].reindex(
+            self.points.index
+        )
+        self._draw_frame(box, "종합 겹쳐 보기 · 1차 대비 변화", text_color)
+        self._text(
+            left + 8, top + 26,
+            f"굵은 실선 {self.name}  ·  가는 점선 {BENCHMARK_NAME}  ·  1차 신호 때 = 0",
+            "nw", muted, size=8,
+        )
+
+        plot_left, plot_right = left + 80, right - 96
+        plot_top, plot_bottom = top + 84, bottom - 46
+        low, high = average_range(stock, benchmark)
+        xs = self._point_xs(plot_left, plot_right)
+        y = self._draw_change_axes(left + 46, right - 86, plot_top, plot_bottom, low, high, xs)
+
+        stock_ys = [None if pd.isna(value) else y(value) for value in stock]
+        benchmark_ys = [None if pd.isna(value) else y(value) for value in benchmark]
+        self._draw_points_line(
+            xs, benchmark_ys, muted, width=2, radius=6, signal_colored=True,
+            dash=(6, 4), hollow=True,
+        )
+        self._draw_points_line(xs, stock_ys, text_color, width=4, radius=9, signal_colored=True)
+
+        # Name each line at its right end, moved apart when the ends are close.
+        ends = [(stock_ys[-1], self.name, text_color), (benchmark_ys[-1], BENCHMARK_NAME, muted)]
+        ends = sorted((end for end in ends if end[0] is not None), key=lambda end: end[0])
+        if len(xs) > 1 and ends:
+            shift = max(0.0, OVERLAY_LABEL_GAP - (ends[-1][0] - ends[0][0])) / 2
+            offsets = (-shift, shift) if len(ends) == 2 else (0.0,)
+            for (end_y, name, color), offset in zip(ends, offsets):
+                self._text(xs[-1] + 18, end_y + offset, name, "w", color, bold=True)
+
+        # The higher line's number goes above its point, the lower one's below.
+        for x, stock_y, benchmark_y, stock_value, benchmark_value in zip(
+            xs, stock_ys, benchmark_ys, stock, benchmark
+        ):
+            stock_on_top = benchmark_y is None or stock_y is None or stock_y <= benchmark_y
+            if stock_y is not None:
+                self._text(
+                    x, stock_y - 15 if stock_on_top else stock_y + 15,
+                    _change_text(stock_value), "s" if stock_on_top else "n", text_color, 11, True,
+                )
+            if benchmark_y is not None:
+                self._text(
+                    x, benchmark_y + 12 if stock_on_top else benchmark_y - 12,
+                    _change_text(benchmark_value), "n" if stock_on_top else "s", muted, 9,
+                )
+        self._draw_time_labels(xs, bottom)
 
 
 def _scale_step(low: float, high: float) -> float:

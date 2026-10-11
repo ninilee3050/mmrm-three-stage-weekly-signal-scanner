@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
@@ -10,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from market_context import SP500_NAME, SP500_TICKER, load_sp500_context
+from signal_trend import OverlayCanvas, signal_points
 from ui_theme import configure_ui_fonts, normalize_theme, theme_palette
 
 
@@ -118,6 +120,10 @@ PRICE_SCALE_TICKS = 5
 MIN_TEXT_CONTRAST = 3.5
 SIGNAL_LABEL_MIN_GAP = 30
 SECOND_ROW_BUTTON_Y = 42
+OVERLAY_PANE_WIDTH = 640
+OVERLAY_OPEN_TEXT = "S&P 500 겹쳐 보기 (임시)"
+OVERLAY_CLOSE_TEXT = "겹쳐 보기 닫기"
+SIGNAL_TREND_BUTTON_OFFSET = 178
 CANDLE_BODY_FILL = ""
 INDICATOR_BAR_WIDTH_RATIO = 0.84
 ZOOM_IN_FACTOR = 0.88
@@ -293,6 +299,13 @@ class ChartPreviewWindow(tk.Toplevel):
             command=self._open_signal_trend,
         )
         self.signal_trend_window = None
+        # Opens a pane on the right with the record's average over the S&P 500's.
+        self.overlay_button = ttk.Button(
+            self, text=OVERLAY_OPEN_TEXT, command=self._toggle_overlay, width=22
+        )
+        self.overlay_visible = False
+        self._overlay_added_width = 0
+        self._benchmark_load_failed = False
         self.previous_button = ttk.Button(
             self.header_frame,
             text="← 이전",
@@ -330,6 +343,7 @@ class ChartPreviewWindow(tk.Toplevel):
             padding=(10, 2, 10, 7),
         ).pack(fill="x")
         self.signal_trend_button.lift()
+        self.overlay_button.lift()
 
         self.chart_area = ttk.Frame(self)
         self.chart_area.pack(fill="both", expand=True)
@@ -350,6 +364,12 @@ class ChartPreviewWindow(tk.Toplevel):
             cursor="crosshair",
         )
         self.comparison_canvas.pack(fill="both", expand=True)
+        self.overlay_frame = ttk.Frame(self.chart_area, width=OVERLAY_PANE_WIDTH)
+        self.overlay_frame.pack_propagate(False)
+        self.overlay_canvas = OverlayCanvas(
+            self.overlay_frame, self.ui_font_family, self.theme_mode
+        )
+        self.overlay_canvas.pack(fill="both", expand=True)
         self.panel_title_font = tkfont.Font(
             root=self,
             family=self.ui_font_family,
@@ -409,8 +429,77 @@ class ChartPreviewWindow(tk.Toplevel):
         self.next_button.place_configure(x=right - 165, **common)
         self.navigation_label.place_configure(x=right - 250, y=10, anchor="ne", relx=relx)
         self.previous_button.place_configure(x=right - 330, **common)
+        second_row = {"y": SECOND_ROW_BUTTON_Y, "anchor": "ne", "relx": relx}
+        self.overlay_button.place_configure(x=right, **second_row)
         self.signal_trend_button.place_configure(
-            x=right, y=SECOND_ROW_BUTTON_Y, anchor="ne", relx=relx
+            x=right - SIGNAL_TREND_BUTTON_OFFSET, **second_row
+        )
+
+    def _toggle_overlay(self) -> None:
+        if self.overlay_visible:
+            self.overlay_visible = False
+            self.overlay_frame.pack_forget()
+            self.overlay_button.configure(text=OVERLAY_OPEN_TEXT)
+            self._change_window_width(-self._overlay_added_width)
+            self._overlay_added_width = 0
+            self._schedule_redraw()
+            return
+
+        self.overlay_visible = True
+        self._overlay_added_width = self._change_window_width(OVERLAY_PANE_WIDTH)
+        # Packed ahead of the S&P 500 chart so the pane is always the rightmost.
+        order = {"before": self.comparison_frame} if self.benchmark_visible else {}
+        self.overlay_frame.pack(side="right", fill="y", padx=(4, 0), **order)
+        self.overlay_button.configure(text=OVERLAY_CLOSE_TEXT)
+        self._benchmark_load_failed = False
+        self._refresh_overlay()
+        self._schedule_redraw()
+
+    def _change_window_width(self, delta: int) -> int:
+        """Widen or narrow a normal window by ``delta``; return the change made."""
+        if delta == 0 or self.state() != "normal":
+            return 0
+        self.update_idletasks()
+        size = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", self.geometry())
+        if size is None:
+            return 0
+        width, height, x, y = (int(value) for value in size.groups())
+        screen_width = self.winfo_screenwidth()
+        new_width = max(self.minsize()[0], min(screen_width, width + delta))
+        x = max(0, min(x, screen_width - new_width))
+        self.maxsize(max(new_width, screen_width), max(height, self.winfo_screenheight()))
+        self.geometry(f"{new_width}x{height}+{x}+{y}")
+        self.update_idletasks()
+        applied = new_width - width
+        if self.benchmark_visible and self._geometry_before_benchmark:
+            # Closing the S&P 500 chart later must restore a window of the new width.
+            self._geometry_before_benchmark = re.sub(
+                r"^\d+",
+                lambda match: str(int(match.group()) + applied),
+                self._geometry_before_benchmark,
+            )
+        return applied
+
+    def _refresh_overlay(self) -> None:
+        """Keep an open overlay pane on the record the chart is showing."""
+        if not getattr(self, "overlay_visible", False):
+            return
+        message = ""
+        if self.benchmark_data.empty:
+            if not self.benchmark_loading and not self._benchmark_load_failed:
+                self.benchmark_loading = True
+                threading.Thread(target=self._load_benchmark_worker, daemon=True).start()
+            message = (
+                "S&P 500 주봉 데이터를 불러오는 중입니다..."
+                if self.benchmark_loading
+                else "S&P 500 데이터를 불러오지 못했습니다."
+            )
+        self.overlay_canvas.show_overlay(
+            self.ticker,
+            self.data,
+            signal_points(self.data, self.cycle),
+            self.benchmark_data,
+            message,
         )
 
     def _open_signal_trend(self) -> None:
@@ -472,6 +561,7 @@ class ChartPreviewWindow(tk.Toplevel):
         window = getattr(self, "signal_trend_window", None)
         if window is not None and window.winfo_exists():
             window.set_theme(self.theme_mode)
+        self.overlay_canvas.set_theme(self.theme_mode)
 
     def _toggle_benchmark(self) -> None:
         if self.benchmark_visible and not self.benchmark_data.empty:
@@ -501,7 +591,10 @@ class ChartPreviewWindow(tk.Toplevel):
         self._primary_width_before_benchmark = max(640, self.canvas.winfo_width())
         self._window_size_before_benchmark = (self.winfo_width(), self.winfo_height())
         self._window_position_before_benchmark = (self.winfo_x(), self.winfo_y())
-        self._position_header_controls(self._window_size_before_benchmark[0])
+        # The controls stay at the stock chart's right edge, left of any overlay pane.
+        self._position_header_controls(
+            self._window_size_before_benchmark[0] - self._overlay_added_width
+        )
         if self._state_before_benchmark != "normal":
             self.state("normal")
             self.update_idletasks()
@@ -603,13 +696,19 @@ class ChartPreviewWindow(tk.Toplevel):
         self.comparison_status_var.set(
             f"S&P 500 (^GSPC)  |  데이터 기준일 {latest}{suffix}"
         )
-        self.benchmark_button.configure(text="S&P 500 비교 닫기", state="normal")
+        self.benchmark_button.configure(
+            text="S&P 500 비교 닫기" if self.benchmark_visible else "S&P 500 비교 열기",
+            state="normal",
+        )
         self._schedule_redraw()
+        self._refresh_overlay()
 
     def _finish_benchmark_error(self, details: str) -> None:
         if not self._window_alive():
             return
         self.benchmark_loading = False
+        self._benchmark_load_failed = True
+        self._refresh_overlay()
         self.comparison_status_var.set("S&P 500 데이터를 불러오지 못했습니다.")
         self.benchmark_button.configure(text="S&P 500 다시 시도", state="normal")
         messagebox.showerror(
@@ -688,6 +787,7 @@ class ChartPreviewWindow(tk.Toplevel):
         self.focus_force()
         self._schedule_redraw()
         self._refresh_signal_trend()
+        self._refresh_overlay()
 
     def _close(self) -> None:
         callback = self._on_close_callback
