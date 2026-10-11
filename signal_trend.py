@@ -22,19 +22,26 @@ SIGNAL_POINTS = (
     ("2차", "SecondSignalDate", "#f59e0b"),
     ("3차", "ThirdDecisionDate", "#dc2626"),
 )
-# (name, data column, line color, show value in K/M/B)
+SIGNAL_COLORS = {label: color for label, _, color in SIGNAL_POINTS}
+# (name, data column, line color, show value in K/M/B, fixed 0-100 scale)
+# Colors stay clear of the green/amber/red that mark the signals.
 TREND_INDICATORS = (
-    ("종가", "Close", "#3b82f6", False),
-    ("거래량", "Volume", "#8b5cf6", True),
-    ("MACD", "MACD", "#f59e0b", False),
-    ("RSI", "RSI", "#10b981", False),
-    ("MFI", "MFI", "#ec4899", False),
+    ("종가", "Close", "#3b82f6", False, False),
+    ("거래량", "Volume", "#94a3b8", True, False),
+    ("MACD", "MACD", "#a855f7", False, False),
+    ("RSI", "RSI", "#06b6d4", False, True),
+    ("MFI", "MFI", "#ec4899", False, True),
 )
-TREND_COLUMNS = [column for _, column, _, _ in TREND_INDICATORS]
+TREND_COLUMNS = [column for _, column, _, _, _ in TREND_INDICATORS]
 RANGE_LOOKBACK_WEEKS = 52
 SCALE_STEP = 25
-INDICATOR_LINE_OPACITY = 0.6
-BAND_OPACITY = 0.13
+OSCILLATOR_GUIDES = (30.0, 70.0)
+MIN_POINT_GAP = 0.18
+INDICATOR_LINE_OPACITY = 0.7
+BAND_OPACITY = 0.16
+BAND_ABOVE_COLOR = "#ef4444"
+BAND_BELOW_COLOR = "#3b82f6"
+END_LABEL_GAP = 15
 MODE_CHANGE = "change"
 MODE_POSITION = "position"
 MODE_LABELS = {
@@ -60,6 +67,22 @@ def signal_points(data: pd.DataFrame, cycle: pd.Series | None) -> pd.DataFrame:
     return pd.DataFrame.from_dict(rows, orient="index", columns=["Date", *TREND_COLUMNS])
 
 
+def range_bounds(
+    data: pd.DataFrame,
+    points: pd.DataFrame,
+    lookback_weeks: int = RANGE_LOOKBACK_WEEKS,
+) -> tuple[pd.Series, pd.Series]:
+    """Lowest and highest weekly value of each indicator around the cycle.
+
+    The window runs from a year before the first signal up to the last one.
+    """
+    index = pd.DatetimeIndex(data.index)
+    start = max(0, int(index.searchsorted(points["Date"].iloc[0])) - lookback_weeks)
+    end = int(index.searchsorted(points["Date"].iloc[-1]))
+    window = data.iloc[start : end + 1][TREND_COLUMNS].astype(float)
+    return window.min(), window.max()
+
+
 def range_positions(
     data: pd.DataFrame,
     points: pd.DataFrame,
@@ -68,16 +91,12 @@ def range_positions(
     """Put every indicator on the same 0-100 scale.
 
     Each value becomes its place between the indicator's lowest (0) and
-    highest (100) weekly value, from a year before the first signal up to the
-    last one.  That makes dollars, share counts and oscillators comparable.
+    highest (100) value in ``range_bounds``.  That makes dollars, share counts
+    and oscillators comparable.
     """
     if points.empty:
         return points.reindex(columns=TREND_COLUMNS).astype(float)
-    index = pd.DatetimeIndex(data.index)
-    start = max(0, int(index.searchsorted(points["Date"].iloc[0])) - lookback_weeks)
-    end = int(index.searchsorted(points["Date"].iloc[-1]))
-    window = data.iloc[start : end + 1][TREND_COLUMNS].astype(float)
-    low, high = window.min(), window.max()
+    low, high = range_bounds(data, points, lookback_weeks)
     span = (high - low).where(high > low)
     return (points[TREND_COLUMNS].astype(float) - low) / span * 100
 
@@ -90,11 +109,50 @@ def change_from_first(positions: pd.DataFrame) -> pd.DataFrame:
 
 
 def trend_lines(data: pd.DataFrame, points: pd.DataFrame, mode: str) -> pd.DataFrame:
-    """Scaled indicator lines for ``mode`` with their average in "평균"."""
+    """Scaled indicator lines for ``mode``, their average and their spread.
+
+    "벌어짐" is the gap between the highest and lowest indicator: a small
+    average with a large spread means the indicators disagree.
+    """
     lines = range_positions(data, points)
     if mode == MODE_CHANGE:
         lines = change_from_first(lines)
-    return lines.assign(평균=lines.mean(axis=1, skipna=True))
+    return lines.assign(
+        평균=lines.mean(axis=1, skipna=True),
+        벌어짐=lines.max(axis=1, skipna=True) - lines.min(axis=1, skipna=True),
+    )
+
+
+def weeks_between(dates) -> list[int]:
+    """Whole weeks from each signal to the next."""
+    dates = pd.DatetimeIndex(dates)
+    return [int(round((later - earlier).days / 7)) for earlier, later in zip(dates, dates[1:])]
+
+
+def time_fractions(dates, min_gap: float = MIN_POINT_GAP) -> list[float]:
+    """Horizontal place (0-1) of each signal, spaced by elapsed time.
+
+    A gap never shrinks below ``min_gap`` of the width, so signals a week
+    apart still have room for their labels.
+    """
+    gaps = np.asarray(weeks_between(dates), dtype=float)
+    if gaps.size == 0:
+        return [0.5]
+    if gaps.sum() <= 0:
+        gaps = np.ones_like(gaps)
+    shares = np.maximum(gaps / gaps.sum(), min(min_gap, 1 / gaps.size))
+    shares = shares / shares.sum()
+    return [0.0, *np.cumsum(shares).clip(0, 1).tolist()]
+
+
+def spread_labels(positions: list[float], gap: float) -> list[float]:
+    """Move label positions apart so neighbours are at least ``gap`` apart."""
+    order = sorted(range(len(positions)), key=lambda number: positions[number])
+    placed = list(positions)
+    for previous, current in zip(order, order[1:]):
+        placed[current] = max(placed[current], placed[previous] + gap)
+    shift = (sum(placed) - sum(positions)) / len(placed) if placed else 0.0
+    return [value - shift for value in placed]
 
 
 class SignalTrendWindow(tk.Toplevel):
@@ -107,28 +165,22 @@ class SignalTrendWindow(tk.Toplevel):
         self.palette = theme_palette(self.theme_mode)
         self.configure(background=self.palette["window"])
         self.title("신호 지점 흐름 (임시)")
-        self.geometry("1100x760")
+        self.geometry("1100x700")
         self.minsize(820, 560)
 
         self.status_var = tk.StringVar(value="")
-        self.mode_var = tk.StringVar(value=MODE_CHANGE)
+        self.mode = MODE_CHANGE
         header = ttk.Frame(self)
         header.pack(fill="x")
         ttk.Label(
             header,
             textvariable=self.status_var,
             font=(self.ui_font_family, 11, "bold"),
-            padding=(10, 7, 10, 2),
+            padding=(10, 7, 10, 4),
         ).pack(side="left")
-        for mode in (MODE_POSITION, MODE_CHANGE):
-            ttk.Radiobutton(
-                header,
-                text=MODE_LABELS[mode],
-                value=mode,
-                variable=self.mode_var,
-                command=self._redraw,
-            ).pack(side="right", padx=(0, 10))
-        ttk.Label(header, text="종합 기준:").pack(side="right", padx=(0, 6))
+        self.mode_button = ttk.Button(header, command=self._toggle_mode)
+        self.mode_button.pack(side="right", padx=(0, 10), pady=(5, 2))
+        self._update_mode_button()
 
         self.canvas = tk.Canvas(
             self, background=self.palette["chart_background"], highlightthickness=0
@@ -156,6 +208,15 @@ class SignalTrendWindow(tk.Toplevel):
         self.canvas.configure(background=self.palette["chart_background"])
         self._redraw()
 
+    def _toggle_mode(self) -> None:
+        self.mode = MODE_POSITION if self.mode == MODE_CHANGE else MODE_CHANGE
+        self._update_mode_button()
+        self._redraw()
+
+    def _update_mode_button(self) -> None:
+        other = MODE_POSITION if self.mode == MODE_CHANGE else MODE_CHANGE
+        self.mode_button.configure(text=f"종합 기준 바꾸기 → {MODE_LABELS[other]}")
+
     def _redraw(self) -> None:
         canvas = self.canvas
         canvas.delete("all")
@@ -173,16 +234,35 @@ class SignalTrendWindow(tk.Toplevel):
             return
 
         margin, gap = 14.0, 10.0
-        small_bottom = margin + (height - 2 * margin) * 0.36
+        small_bottom = margin + (height - 2 * margin) * 0.44
         small_width = (width - 2 * margin - gap * (len(TREND_INDICATORS) - 1)) / len(
             TREND_INDICATORS
         )
-        for number, (name, column, color, compact) in enumerate(TREND_INDICATORS):
+        self._fractions = time_fractions(self.points["Date"])
+        low, high = range_bounds(self.data, self.points)
+        for number, (name, column, color, compact, fixed_scale) in enumerate(TREND_INDICATORS):
             left = margin + number * (small_width + gap)
+            scale = (0.0, 100.0) if fixed_scale else (float(low[column]), float(high[column]))
             self._draw_indicator_panel(
-                (left, margin, left + small_width, small_bottom), name, column, color, compact
+                (left, margin, left + small_width, small_bottom),
+                name, column, color, compact, scale, fixed_scale,
             )
         self._draw_combined_panel((margin, small_bottom + gap, width - margin, height - margin))
+
+    def _text(self, x: float, y: float, text: str, anchor: str, color: str, size: int = 9,
+              bold: bool = False) -> int:
+        font = (self.ui_font_family, size, "bold") if bold else (self.ui_font_family, size)
+        return self.canvas.create_text(x, y, text=text, anchor=anchor, fill=color, font=font)
+
+    def _text_on_panel(self, x: float, y: float, text: str, anchor: str, color: str,
+                       size: int = 9, bold: bool = False) -> None:
+        """Text on a panel-colored patch, so lines behind it do not cut through."""
+        item = self._text(x, y, text, anchor, color, size, bold)
+        left, top, right, bottom = self.canvas.bbox(item)
+        self.canvas.create_rectangle(
+            left - 3, top, right + 3, bottom, fill=self.palette["chart_panel"], outline=""
+        )
+        self.canvas.tag_raise(item)
 
     def _draw_frame(self, box: tuple[float, float, float, float], title: str, color: str) -> None:
         left, top, right, bottom = box
@@ -191,17 +271,10 @@ class SignalTrendWindow(tk.Toplevel):
             outline=self.palette["chart_border"],
             fill=self.palette["chart_panel"],
         )
-        self.canvas.create_text(
-            left + 8, top + 6, text=title, anchor="nw", fill=color,
-            font=(self.ui_font_family, 9, "bold"),
-        )
+        self._text(left + 8, top + 6, title, "nw", color, bold=True)
 
-    def _point_xs(self, left: float, right: float, padding: float) -> list[float]:
-        count = len(self.points)
-        if count == 1:
-            return [(left + right) / 2]
-        step = (right - left - 2 * padding) / (count - 1)
-        return [left + padding + number * step for number in range(count)]
+    def _point_xs(self, left: float, right: float) -> list[float]:
+        return [left + fraction * (right - left) for fraction in self._fractions]
 
     def _draw_points_line(
         self, xs: list[float], ys: list[float | None], color: str, width: float, radius: float,
@@ -213,130 +286,172 @@ class SignalTrendWindow(tk.Toplevel):
             self.canvas.create_line(
                 *[coordinate for point in drawn for coordinate in point], fill=color, width=width
             )
-        signal_colors = {label: signal_color for label, _, signal_color in SIGNAL_POINTS}
         for label, x, y in zip(self.points.index, xs, ys):
             if y is None:
                 continue
-            fill = signal_colors[label] if signal_colored else color
+            fill = SIGNAL_COLORS[label] if signal_colored else color
             self.canvas.create_oval(
                 x - radius, y - radius, x + radius, y + radius, fill=fill, outline=fill
             )
 
     def _draw_signal_labels(self, xs: list[float], y: float, with_dates: bool) -> None:
-        signal_colors = {label: color for label, _, color in SIGNAL_POINTS}
         for (label, row), x in zip(self.points.iterrows(), xs):
-            text = f"{label}  {row['Date']:%Y-%m-%d}" if with_dates else label
-            self.canvas.create_text(
-                x, y, text=text, anchor="s", fill=signal_colors[label],
-                font=(self.ui_font_family, 9, "bold"),
-            )
+            text = f"{label} {row['Date']:%m-%d}" if with_dates else label
+            self._text(x, y, text, "s", SIGNAL_COLORS[label], bold=True)
 
     def _draw_indicator_panel(
         self, box: tuple[float, float, float, float], name: str, column: str, color: str,
-        compact: bool,
+        compact: bool, scale: tuple[float, float], fixed_scale: bool,
     ) -> None:
+        """One indicator's signal points on a scale that does not exaggerate.
+
+        The oscillators use their full 0-100 scale; the others use the range
+        of the past year, so a small move looks small.
+        """
         left, top, right, bottom = box
+        muted = self.palette["chart_text"]
         self._draw_frame(box, name, color)
-        values = self.points[column].astype(float)
-        low, high = _padded_range(values.to_numpy(), padding=0.25)
-        plot_top, plot_bottom = top + 46, bottom - 46
-        xs = self._point_xs(left, right, padding=34)
-        ys = [
-            None if pd.isna(value) else _map(value, low, high, plot_top, plot_bottom)
-            for value in values
-        ]
+        low, high = scale
+        if not np.isfinite([low, high]).all() or high <= low:
+            low, high = _padded_range(self.points[column].to_numpy(), padding=0.25)
+        plot_left, plot_right = left + 30, right - 52
+        plot_top, plot_bottom = top + 48, bottom - 48
+        y = lambda value: _map(value, low, high, plot_top, plot_bottom)
+
+        # The scale's top and bottom, so the reader sees what the panel spans.
+        for value, edge_y in ((high, plot_top), (low, plot_bottom)):
+            self.canvas.create_line(
+                left + 8, edge_y, right - 8, edge_y, fill=self.palette["chart_grid"]
+            )
+            edge_text = f"{value:.0f}" if fixed_scale else _value_text(value, compact)
+            self._text(right - 8, edge_y - 2, edge_text, "se", muted, size=8)
+        if fixed_scale:
+            for guide in OSCILLATOR_GUIDES:
+                self.canvas.create_line(
+                    left + 8, y(guide), right - 8, y(guide),
+                    fill=self.palette["chart_grid"], dash=(3, 3),
+                )
+                self._text(right - 8, y(guide) - 2, f"{guide:.0f}", "se", muted, size=8)
+        self._text(
+            right - 8, top + 7, "0~100 눈금" if fixed_scale else "최근 1년 범위", "ne", muted, size=8
+        )
+
+        values = self.points[column].astype(float).tolist()
+        xs = self._point_xs(plot_left, plot_right)
+        ys = [None if pd.isna(value) else y(value) for value in values]
         self._draw_points_line(xs, ys, color, width=2.5, radius=5, signal_colored=True)
-        lowest = values.min()
-        for x, y, value in zip(xs, ys, values):
-            if y is None:
+        for number, (x, point_y, value) in enumerate(zip(xs, ys, values)):
+            if point_y is None:
                 continue
-            # The lowest point has lines leaving upward, so its label goes below.
-            below = len(values) > 1 and value == lowest
-            self.canvas.create_text(
-                x, y + 9 if below else y - 9, text=_value_text(value, compact),
-                anchor="n" if below else "s",
-                fill=self.palette["text"], font=(self.ui_font_family, 9),
+            # A point lower than its neighbours has lines leaving upward.
+            neighbours = [values[n] for n in (number - 1, number + 1) if 0 <= n < len(values)]
+            below = bool(neighbours) and all(value <= other for other in neighbours)
+            self._text(
+                x, point_y + 9 if below else point_y - 9, _value_text(value, compact),
+                "n" if below else "s", self.palette["text"],
             )
         self._draw_signal_labels(xs, bottom - 6, with_dates=False)
 
     def _draw_combined_panel(self, box: tuple[float, float, float, float]) -> None:
         left, top, right, bottom = box
-        mode = self.mode_var.get()
-        lines = trend_lines(self.data, self.points, mode)
-        title = (
-            "종합 · 1차 신호 때를 0으로 본 변화 (각 지표의 최근 1년 범위를 100으로 환산)"
-            if mode == MODE_CHANGE
-            else "종합 · 각 지표가 최근 1년 최저(0)~최고(100) 중 어디에 있는지"
-        )
-        self._draw_frame(box, title, self.palette["text"])
-
-        plot_left, plot_right = left + 54, right - 20
-        plot_top, plot_bottom = top + 58, bottom - 34
-        low, high = (0.0, 100.0) if mode == MODE_POSITION else _change_range(lines.to_numpy())
-        y = lambda value: _map(value, low, high, plot_top, plot_bottom)
-        xs = self._point_xs(plot_left, plot_right, padding=70)
+        mode = self.mode
+        muted = self.palette["chart_text"]
         panel_color = self.palette["chart_panel"]
         average_color = self.palette["text"]
-        band_color = _blend(average_color, panel_color, BAND_OPACITY)
-        self._draw_spread_band(xs, lines[TREND_COLUMNS], y, band_color)
+        lines = trend_lines(self.data, self.points, mode)
+        indicators = lines[TREND_COLUMNS]
+        self._draw_frame(box, f"종합 · {MODE_LABELS[mode]}", average_color)
+        self._text(
+            right - 8, top + 7,
+            "눈금: 각 지표의 최근 1년 최저~최고를 0~100으로 환산"
+            + ("  ·  1차 신호 때 = 0" if mode == MODE_CHANGE else ""),
+            "ne", muted, size=8,
+        )
 
-        for tick in np.arange(low, high + 1, SCALE_STEP):
+        plot_left, plot_right = left + 96, right - 110
+        plot_top, plot_bottom = top + 62, bottom - 46
+        if mode == MODE_POSITION:
+            low, high = 0.0, 100.0
+        else:
+            low, high = _padded_range(indicators.to_numpy(), padding=0.08, include_zero=True)
+        y = lambda value: _map(value, low, high, plot_top, plot_bottom)
+        xs = self._point_xs(plot_left, plot_right)
+
+        self._draw_spread_bands(xs, indicators, lines["평균"], y)
+        first_tick = np.ceil(low / SCALE_STEP) * SCALE_STEP
+        for tick in np.arange(first_tick, high + 0.01, SCALE_STEP):
             self.canvas.create_line(
-                plot_left, y(tick), plot_right, y(tick), fill=self.palette["chart_grid"]
+                left + 46, y(tick), right - 100, y(tick), fill=self.palette["chart_grid"]
             )
-            self.canvas.create_text(
-                plot_left - 8, y(tick), text=_scaled_text(tick, mode), anchor="e",
-                fill=self.palette["chart_text"], font=(self.ui_font_family, 8),
-            )
+            self._text(left + 40, y(tick), _scaled_text(tick, mode), "e", muted, size=8)
         if mode == MODE_CHANGE:
             self.canvas.create_line(
-                plot_left, y(0), plot_right, y(0), fill=self.palette["chart_text"], dash=(4, 3)
+                left + 46, y(0), right - 100, y(0), fill=muted, dash=(4, 3)
             )
 
-        # The average is the main line; the indicators stay faint behind it.
-        legend_x = left + 10
-        for name, column, color, _ in TREND_INDICATORS:
+        # The average is the main line; the indicators stay faint behind it
+        # and are named at their right end instead of in a legend.
+        end_ys, end_names, end_colors = [], [], []
+        for name, column, color, _, _ in TREND_INDICATORS:
             faint = _blend(color, panel_color, INDICATOR_LINE_OPACITY)
-            ys = [None if pd.isna(value) else y(value) for value in lines[column]]
+            ys = [None if pd.isna(value) else y(value) for value in indicators[column]]
             self._draw_points_line(xs, ys, faint, width=1.3, radius=2.5, signal_colored=False)
-            legend_x = self._draw_legend_item(legend_x, top + 34, name, faint, width=2)
-        legend_x = self._draw_legend_item(legend_x, top + 34, "최고~최저 범위", band_color, width=10)
+            if ys[-1] is not None:
+                end_ys.append(ys[-1])
+                end_names.append(name)
+                end_colors.append(color)
         average_ys = [None if pd.isna(value) else y(value) for value in lines["평균"]]
         self._draw_points_line(xs, average_ys, average_color, width=4, radius=6, signal_colored=False)
-        self._draw_legend_item(legend_x, top + 34, "평균", average_color, width=4)
-        for x, point_y, value in zip(xs, average_ys, lines["평균"]):
+        if len(xs) > 1:
+            if average_ys[-1] is not None:
+                end_ys.append(average_ys[-1])
+                end_names.append("평균")
+                end_colors.append(average_color)
+            for name, color, label_y in zip(
+                end_names, end_colors, spread_labels(end_ys, END_LABEL_GAP)
+            ):
+                self._text(xs[-1] + 14, label_y, name, "w", color, bold=name == "평균")
+
+        for number, (x, point_y, value, spread) in enumerate(
+            zip(xs, average_ys, lines["평균"], lines["벌어짐"])
+        ):
             if point_y is None:
                 continue
-            self.canvas.create_text(
-                x, point_y - 12, text=_scaled_text(value, mode), anchor="s",
-                fill=average_color, font=(self.ui_font_family, 10, "bold"),
+            # The last point's label sits to its left, clear of the line names.
+            at_end = number == len(xs) - 1 and len(xs) > 1
+            label_x, anchor = (x - 12, "se") if at_end else (x, "s")
+            self._text_on_panel(
+                label_x, point_y - 26, _scaled_text(value, mode), anchor, average_color, 11, True
             )
+            if spread > 0:
+                self._text_on_panel(
+                    label_x, point_y - 12, f"벌어짐 {spread:.0f}", anchor, muted, size=8
+                )
+
         self._draw_signal_labels(xs, bottom - 8, with_dates=True)
+        for weeks, earlier, later in zip(weeks_between(self.points["Date"]), xs, xs[1:]):
+            self._text((earlier + later) / 2, bottom - 9, f"{weeks}주", "s", muted, size=8)
 
-    def _draw_spread_band(self, xs: list[float], indicators: pd.DataFrame, y, color: str) -> None:
-        """Shade between the highest and lowest indicator at each signal.
+    def _draw_spread_bands(self, xs: list[float], indicators: pd.DataFrame, average: pd.Series,
+                           y) -> None:
+        """Shade from the average up to the highest and down to the lowest indicator.
 
-        The lines start together and drift apart, so the band widens like a
-        forecast cone and shows how much the indicators disagree.
+        The lines start together and drift apart, so the bands widen like a
+        forecast cone and show how much the indicators disagree.
         """
-        upper = [
-            (x, y(value)) for x, value in zip(xs, indicators.max(axis=1)) if not pd.isna(value)
-        ]
-        lower = [
-            (x, y(value)) for x, value in zip(xs, indicators.min(axis=1)) if not pd.isna(value)
-        ]
-        if len(upper) < 2:
-            return
-        outline = [coordinate for point in upper + lower[::-1] for coordinate in point]
-        self.canvas.create_polygon(*outline, fill=color, outline="")
-
-    def _draw_legend_item(self, x: float, y: float, name: str, color: str, width: int) -> float:
-        self.canvas.create_line(x, y, x + 22, y, fill=color, width=width)
-        text = self.canvas.create_text(
-            x + 28, y, text=name, anchor="w", fill=self.palette["chart_text"],
-            font=(self.ui_font_family, 9),
-        )
-        return self.canvas.bbox(text)[2] + 18
+        panel_color = self.palette["chart_panel"]
+        for edge, color in (
+            (indicators.max(axis=1), BAND_ABOVE_COLOR),
+            (indicators.min(axis=1), BAND_BELOW_COLOR),
+        ):
+            outer = [(x, y(value)) for x, value in zip(xs, edge) if not pd.isna(value)]
+            inner = [(x, y(value)) for x, value in zip(xs, average) if not pd.isna(value)]
+            if len(outer) < 2:
+                continue
+            outline = [coordinate for point in outer + inner[::-1] for coordinate in point]
+            self.canvas.create_polygon(
+                *outline, fill=_blend(color, panel_color, BAND_OPACITY), outline=""
+            )
 
 
 def _padded_range(
@@ -351,15 +466,6 @@ def _padded_range(
         low, high = min(0.0, low), max(0.0, high)
     margin = (high - low) * padding if high > low else max(abs(low) * 0.05, 1.0)
     return low - margin, high + margin
-
-
-def _change_range(values) -> tuple[float, float]:
-    """Range around 0 that ends on scale steps, with room for the point labels."""
-    low, high = _padded_range(values, padding=0.12, include_zero=True)
-    return (
-        float(np.floor(low / SCALE_STEP) * SCALE_STEP),
-        float(np.ceil(high / SCALE_STEP) * SCALE_STEP),
-    )
 
 
 def _blend(color: str, background: str, opacity: float) -> str:

@@ -10,7 +10,10 @@ from signal_trend import (
     change_from_first,
     range_positions,
     signal_points,
+    spread_labels,
+    time_fractions,
     trend_lines,
+    weeks_between,
 )
 
 
@@ -92,3 +95,40 @@ def test_average_skips_indicators_without_a_value() -> None:
     # MFI is flat, so the average is over the four indicators that moved.
     assert position.loc["3차", "평균"] == pytest.approx(100.0)
     assert change["평균"].tolist() == pytest.approx([0.0, 2 / 56 * 100, 4 / 56 * 100])
+
+
+def test_spread_is_the_gap_between_the_highest_and_lowest_indicator() -> None:
+    data = weekly_data()
+    data["RSI"] = 40.0
+    data.loc[data.index[59], "RSI"] = 20.0  # falls while the others rise
+    points = signal_points(data, cycle(data, 55, 57, 59))
+
+    change = trend_lines(data, points, MODE_CHANGE)
+
+    assert change.loc["1차", "벌어짐"] == 0
+    assert change.loc["3차", "벌어짐"] == pytest.approx(4 / 56 * 100 + 100)
+
+
+def test_points_are_spaced_by_elapsed_weeks() -> None:
+    dates = pd.to_datetime(["2026-06-29", "2026-09-07", "2026-10-05"])
+
+    assert weeks_between(dates) == [10, 4]
+    assert time_fractions(dates) == pytest.approx([0, 10 / 14, 1])
+
+
+def test_close_signals_keep_room_for_their_labels() -> None:
+    dates = pd.to_datetime(["2026-01-05", "2026-01-12", "2026-10-05"])
+
+    fractions = time_fractions(dates, min_gap=0.2)
+
+    assert fractions[0] == 0 and fractions[-1] == pytest.approx(1)
+    assert fractions[1] == pytest.approx(0.2 / (0.2 + 38 / 39))
+    assert time_fractions(dates[:1]) == [0.5]
+
+
+def test_overlapping_end_labels_are_pushed_apart() -> None:
+    placed = spread_labels([100.0, 102.0, 150.0], gap=15)
+
+    assert placed[1] - placed[0] == pytest.approx(15)
+    assert placed[2] - placed[1] >= 15
+    assert spread_labels([10.0, 50.0], gap=15) == [10.0, 50.0]
