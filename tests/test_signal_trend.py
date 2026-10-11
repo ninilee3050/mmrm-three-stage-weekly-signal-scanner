@@ -10,7 +10,6 @@ from signal_trend import (
     change_from_first,
     range_positions,
     signal_points,
-    spread_labels,
     time_fractions,
     trend_lines,
     weeks_between,
@@ -128,11 +127,3 @@ def test_close_signals_keep_room_for_their_labels() -> None:
     assert fractions[0] == 0 and fractions[-1] == pytest.approx(1)
     assert fractions[1] == pytest.approx(0.2 / (0.2 + 38 / 39))
     assert time_fractions(dates[:1]) == [0.5]
-
-
-def test_overlapping_end_labels_are_pushed_apart() -> None:
-    placed = spread_labels([100.0, 102.0, 150.0], gap=15)
-
-    assert placed[1] - placed[0] == pytest.approx(15)
-    assert placed[2] - placed[1] >= 15
-    assert spread_labels([10.0, 50.0], gap=15) == [10.0, 50.0]

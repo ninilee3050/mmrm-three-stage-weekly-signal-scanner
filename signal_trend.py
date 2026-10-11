@@ -23,31 +23,30 @@ SIGNAL_POINTS = (
     ("3차", "ThirdDecisionDate", "#dc2626"),
 )
 SIGNAL_COLORS = {label: color for label, _, color in SIGNAL_POINTS}
-# (name, data column, line color, show value in K/M/B, fixed 0-100 scale,
+# (name, data column, show value in K/M/B, fixed 0-100 scale,
 #  baseline: a fixed level or the data column that holds it, baseline name)
-# Colors stay clear of the green/amber/red that mark the signals.
 TREND_INDICATORS = (
-    ("종가", "Close", "#3b82f6", False, False, None, ""),
-    ("거래량", "Volume", "#94a3b8", True, False, "Volume_MA_50", "50주 평균"),
-    ("Momentum", "Momentum", "#c08457", False, False, 0.0, "0"),
-    ("MACD", "MACD", "#a855f7", False, False, 0.0, "0"),
-    ("RSI", "RSI", "#06b6d4", False, True, 50.0, "50"),
-    ("MFI", "MFI", "#ec4899", False, True, 50.0, "50"),
+    ("종가", "Close", False, False, None, ""),
+    ("거래량", "Volume", True, False, "Volume_MA_50", "50주 평균"),
+    ("Momentum", "Momentum", False, False, 0.0, "0"),
+    ("MACD", "MACD", False, False, 0.0, "0"),
+    ("RSI", "RSI", False, True, 50.0, "50"),
+    ("MFI", "MFI", False, True, 50.0, "50"),
 )
+# Brighter than the 1차 signal green, so the baseline is not taken for it.
+BASELINE_COLORS = {"dark": "#39ff14", "light": "#00c853"}
 TREND_COLUMNS = [indicator[1] for indicator in TREND_INDICATORS]
 BASELINE_COLUMNS = [
-    indicator[5] for indicator in TREND_INDICATORS if isinstance(indicator[5], str)
+    indicator[4] for indicator in TREND_INDICATORS if isinstance(indicator[4], str)
 ]
 POINT_COLUMNS = [*TREND_COLUMNS, *BASELINE_COLUMNS]
 RANGE_LOOKBACK_WEEKS = 52
 SCALE_STEP = 25
 OSCILLATOR_GUIDES = (30.0, 70.0)
 MIN_POINT_GAP = 0.18
-INDICATOR_LINE_OPACITY = 0.7
 BAND_OPACITY = 0.16
 BAND_ABOVE_COLOR = "#ef4444"
 BAND_BELOW_COLOR = "#3b82f6"
-END_LABEL_GAP = 15
 MODE_CHANGE = "change"
 MODE_POSITION = "position"
 MODE_LABELS = {
@@ -151,16 +150,6 @@ def time_fractions(dates, min_gap: float = MIN_POINT_GAP) -> list[float]:
     return [0.0, *np.cumsum(shares).clip(0, 1).tolist()]
 
 
-def spread_labels(positions: list[float], gap: float) -> list[float]:
-    """Move label positions apart so neighbours are at least ``gap`` apart."""
-    order = sorted(range(len(positions)), key=lambda number: positions[number])
-    placed = list(positions)
-    for previous, current in zip(order, order[1:]):
-        placed[current] = max(placed[current], placed[previous] + gap)
-    shift = (sum(placed) - sum(positions)) / len(placed) if placed else 0.0
-    return [value - shift for value in placed]
-
-
 class SignalTrendWindow(tk.Toplevel):
     """Small panels with each indicator's signal points, and a combined panel."""
 
@@ -247,7 +236,7 @@ class SignalTrendWindow(tk.Toplevel):
         self._fractions = time_fractions(self.points["Date"])
         low, high = range_bounds(self.data, self.points)
         for number, indicator in enumerate(TREND_INDICATORS):
-            column, fixed_scale = indicator[1], indicator[4]
+            column, fixed_scale = indicator[1], indicator[3]
             left = margin + number * (small_width + gap)
             scale = (0.0, 100.0) if fixed_scale else (float(low[column]), float(high[column]))
             self._draw_indicator_panel(
@@ -315,9 +304,11 @@ class SignalTrendWindow(tk.Toplevel):
         of the past year, so a small move looks small.  A dashed baseline
         shows which side of its reference level each point is on.
         """
-        name, column, color, compact, fixed_scale, baseline, baseline_name = indicator
+        name, column, compact, fixed_scale, baseline, baseline_name = indicator
         left, top, right, bottom = box
         muted = self.palette["chart_text"]
+        # Every panel uses one line color; the signal dots carry the color.
+        color = self.palette["text"]
         self._draw_frame(box, name, color)
         if baseline is None:
             baseline_values = []
@@ -378,18 +369,16 @@ class SignalTrendWindow(tk.Toplevel):
         drawn = [(x, y(value)) for x, value in zip(xs, values) if np.isfinite(value)]
         if not drawn:
             return
-        muted = self.palette["chart_text"]
         path = [(left, drawn[0][1]), *drawn, (right, drawn[-1][1])]
         self.canvas.create_line(
             *[coordinate for point in path for coordinate in point],
-            fill=muted, dash=(5, 3),
+            fill=BASELINE_COLORS[self.theme_mode], dash=(6, 4), width=2,
         )
 
     def _draw_combined_panel(self, box: tuple[float, float, float, float]) -> None:
         left, top, right, bottom = box
         mode = self.mode
         muted = self.palette["chart_text"]
-        panel_color = self.palette["chart_panel"]
         average_color = self.palette["text"]
         lines = trend_lines(self.data, self.points, mode)
         indicators = lines[TREND_COLUMNS]
@@ -422,44 +411,20 @@ class SignalTrendWindow(tk.Toplevel):
                 left + 46, y(0), right - 100, y(0), fill=muted, dash=(4, 3)
             )
 
-        # The average is the main line; the indicators stay faint behind it
-        # and are named at their right end instead of in a legend.
-        end_ys, end_names, end_colors = [], [], []
-        for name, column, color, *_ in TREND_INDICATORS:
-            faint = _blend(color, panel_color, INDICATOR_LINE_OPACITY)
-            ys = [None if pd.isna(value) else y(value) for value in indicators[column]]
-            self._draw_points_line(xs, ys, faint, width=1.3, radius=2.5, signal_colored=False)
-            if ys[-1] is not None:
-                end_ys.append(ys[-1])
-                end_names.append(name)
-                end_colors.append(color)
+        # Only the average is drawn; the bands show how far the indicators spread.
         average_ys = [None if pd.isna(value) else y(value) for value in lines["평균"]]
         self._draw_points_line(xs, average_ys, average_color, width=4, radius=6, signal_colored=False)
-        if len(xs) > 1:
-            if average_ys[-1] is not None:
-                end_ys.append(average_ys[-1])
-                end_names.append("평균")
-                end_colors.append(average_color)
-            for name, color, label_y in zip(
-                end_names, end_colors, spread_labels(end_ys, END_LABEL_GAP)
-            ):
-                self._text(xs[-1] + 14, label_y, name, "w", color, bold=name == "평균")
+        if len(xs) > 1 and average_ys[-1] is not None:
+            self._text(xs[-1] + 14, average_ys[-1], "평균", "w", average_color, bold=True)
 
-        for number, (x, point_y, value, spread) in enumerate(
-            zip(xs, average_ys, lines["평균"], lines["벌어짐"])
-        ):
+        for x, point_y, value, spread in zip(xs, average_ys, lines["평균"], lines["벌어짐"]):
             if point_y is None:
                 continue
-            # The last point's label sits to its left, clear of the line names.
-            at_end = number == len(xs) - 1 and len(xs) > 1
-            label_x, anchor = (x - 12, "se") if at_end else (x, "s")
             self._text_on_panel(
-                label_x, point_y - 26, _scaled_text(value, mode), anchor, average_color, 11, True
+                x, point_y - 26, _scaled_text(value, mode), "s", average_color, 11, True
             )
             if spread > 0:
-                self._text_on_panel(
-                    label_x, point_y - 12, f"벌어짐 {spread:.0f}", anchor, muted, size=8
-                )
+                self._text_on_panel(x, point_y - 12, f"벌어짐 {spread:.0f}", "s", muted, size=8)
 
         self._draw_signal_labels(xs, bottom - 8, with_dates=True)
         for weeks, earlier, later in zip(weeks_between(self.points["Date"]), xs, xs[1:]):
