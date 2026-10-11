@@ -8,6 +8,7 @@ its own window from a button in the chart preview.
 from __future__ import annotations
 
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -48,6 +49,7 @@ BENCHMARK_NAME = SP500_NAME
 BENCHMARK_OPEN_TEXT = "S&P 500 비교 열기"
 BENCHMARK_CLOSE_TEXT = "S&P 500 비교 닫기"
 END_LABEL_GAP = 16.0
+ROW_NAVIGATION_REFOCUS_SECONDS = 20.0
 SCALE_STEPS = (25, 10, 5, 2, 1)
 OSCILLATOR_GUIDES = (30.0, 70.0)
 MIN_POINT_GAP = 0.18
@@ -181,10 +183,13 @@ class SignalTrendWindow(tk.Toplevel):
         theme_mode: str = "light",
         on_navigate=None,
         on_close=None,
+        on_navigate_rows=None,
     ) -> None:
         super().__init__(master)
         self.ui_font_family = configure_ui_fonts(self)
         self._on_navigate_callback = on_navigate
+        self._on_navigate_rows_callback = on_navigate_rows
+        self._refocus_until = 0.0
         self._on_close_callback = on_close
         self._navigating = False
         self.theme_mode = normalize_theme(theme_mode)
@@ -224,6 +229,8 @@ class SignalTrendWindow(tk.Toplevel):
         self.previous_button.pack(side="right", pady=(5, 2))
         self.bind("<Left>", lambda _event: self._request_navigation(-1))
         self.bind("<Right>", lambda _event: self._request_navigation(1))
+        self.bind("<Up>", lambda _event: self._request_row_navigation(-1))
+        self.bind("<Down>", lambda _event: self._request_row_navigation(1))
         # The same record values as the chart preview's header.
         self.info_frame = ttk.Frame(self.primary_frame, padding=(10, 0, 10, 8))
         self.info_frame.pack(fill="x")
@@ -280,9 +287,10 @@ class SignalTrendWindow(tk.Toplevel):
         self.title(f"{ticker} · 신호 지점 흐름")
         self._ensure_benchmark()
         self._show_charts()
-        if self._navigating:
+        if self._navigating or time.monotonic() < self._refocus_until:
             # The chart preview raised itself to show the record; come back on top.
             self._navigating = False
+            self._refocus_until = 0.0
             self.lift()
             self.focus_force()
 
@@ -308,6 +316,14 @@ class SignalTrendWindow(tk.Toplevel):
             self._navigating = True
             self._on_navigate_callback(direction)
             self._navigating = False
+        return "break"
+
+    def _request_row_navigation(self, direction: int) -> str:
+        """Move to the stock above or below in the scanner table that is open."""
+        if self._on_navigate_rows_callback is not None:
+            # The stock loads in the background; keep the keyboard here when it arrives.
+            self._refocus_until = time.monotonic() + ROW_NAVIGATION_REFOCUS_SECONDS
+            self._on_navigate_rows_callback(direction)
         return "break"
 
     def _set_navigation_state(self, index: int | None, total: int) -> None:

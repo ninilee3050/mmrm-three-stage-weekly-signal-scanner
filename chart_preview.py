@@ -119,7 +119,8 @@ MIN_TEXT_CONTRAST = 3.5
 SIGNAL_LABEL_MIN_GAP = 30
 SECOND_ROW_BUTTON_Y = 42
 CONTROLS_HELP_TEXT = (
-    "방향키 ←·→ : 이전·다음 기록\n"
+    "방향키 ←·→ : 이 종목의 이전·다음 기록\n"
+    "방향키 ↑·↓ : 스캐너에 열려 있는 표의 위·아래 종목\n"
     "마우스 휠 : 확대·축소\n"
     "드래그 : 좌우 이동\n"
     "더블클릭 : 선택한 기록 전체 보기\n"
@@ -407,11 +408,13 @@ class ChartPreviewWindow(tk.Toplevel):
         on_close=None,
         on_navigate=None,
         theme_mode: str = "light",
+        on_navigate_rows=None,
     ) -> None:
         super().__init__(master)
         self.ui_font_family = configure_ui_fonts(self)
         self._on_close_callback = on_close
         self._on_navigate_callback = on_navigate
+        self._on_navigate_rows_callback = on_navigate_rows
         self.theme_mode = normalize_theme(theme_mode)
         self.palette = theme_palette(self.theme_mode)
         self.configure(background=self.palette["window"])
@@ -538,6 +541,8 @@ class ChartPreviewWindow(tk.Toplevel):
         self.comparison_canvas.bind("<Double-Button-1>", self._reset_view)
         self.bind("<Left>", lambda _event: self._request_navigation(-1))
         self.bind("<Right>", lambda _event: self._request_navigation(1))
+        self.bind("<Up>", lambda _event: self._request_row_navigation(-1))
+        self.bind("<Down>", lambda _event: self._request_row_navigation(1))
 
         self.ticker = ""
         self.company = ""
@@ -584,6 +589,7 @@ class ChartPreviewWindow(tk.Toplevel):
             self,
             self.theme_mode,
             on_navigate=self._request_navigation,
+            on_navigate_rows=self._request_row_navigation,
             on_close=self._signal_trend_closed,
         )
         self.signal_trend_button.configure(text=SIGNAL_TREND_CLOSE_TEXT)
@@ -630,6 +636,12 @@ class ChartPreviewWindow(tk.Toplevel):
             return "break"
         if self._on_navigate_callback is not None:
             self._on_navigate_callback(-1 if direction < 0 else 1)
+        return "break"
+
+    def _request_row_navigation(self, direction: int) -> str:
+        """Move to the stock above or below in the scanner table that is open."""
+        if self._on_navigate_rows_callback is not None:
+            self._on_navigate_rows_callback(-1 if direction < 0 else 1)
         return "break"
 
     def _set_navigation_state(self, index: int | None, total: int) -> None:

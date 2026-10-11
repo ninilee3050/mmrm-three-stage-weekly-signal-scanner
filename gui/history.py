@@ -173,6 +173,7 @@ class HistoryChartMixin:
                 self,
                 on_close=self._on_chart_closed,
                 on_navigate=self._navigate_chart_history,
+                on_navigate_rows=self._navigate_scan_rows,
                 theme_mode=self.theme_mode,
             )
         try:
@@ -218,6 +219,39 @@ class HistoryChartMixin:
             f"차트 강도: {detail.get('score_text', '계산 불가')}  |  "
             f"검토등급: {detail.get('grade', '확인 필요')}"
         )
+
+    def _navigate_scan_rows(self, direction: int) -> None:
+        """Select the row above or below in the scanner table on the open tab.
+
+        The table's own select handler then loads that row, and the open
+        chart follows it.
+        """
+        tree = self._open_scan_tree()
+        rows = tree.get_children() if tree is not None else ()
+        if not rows:
+            return
+        selected = tree.selection()
+        if selected and selected[0] in rows:
+            target = rows[min(len(rows) - 1, max(0, rows.index(selected[0]) + direction))]
+            if target == selected[0]:
+                return
+        else:
+            target = rows[0] if direction > 0 else rows[-1]
+        tree.selection_set(target)
+        tree.focus(target)
+        tree.see(target)
+
+    def _open_scan_tree(self) -> ttk.Treeview | None:
+        """The ticker table on the scanner tab that is showing, if it has one."""
+        trees = (
+            self.scan_tree,
+            self.active_tree,
+            self.closed_tree,
+            self.closed_scenario_tree,
+            self.ranking_tree,
+        )
+        tab = self.scan_notebook.index("current")
+        return trees[tab] if tab < len(trees) else None
 
     def _navigate_chart_history(self, direction: int) -> None:
         if self.current_signal_cycles.empty or not self._chart_is_open():
