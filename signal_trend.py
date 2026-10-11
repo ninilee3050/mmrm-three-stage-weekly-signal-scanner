@@ -33,6 +33,8 @@ TREND_INDICATORS = (
 TREND_COLUMNS = [column for _, column, _, _ in TREND_INDICATORS]
 RANGE_LOOKBACK_WEEKS = 52
 SCALE_STEP = 25
+INDICATOR_LINE_OPACITY = 0.6
+BAND_OPACITY = 0.13
 MODE_CHANGE = "change"
 MODE_POSITION = "position"
 MODE_LABELS = {
@@ -272,6 +274,11 @@ class SignalTrendWindow(tk.Toplevel):
         plot_top, plot_bottom = top + 58, bottom - 34
         low, high = (0.0, 100.0) if mode == MODE_POSITION else _change_range(lines.to_numpy())
         y = lambda value: _map(value, low, high, plot_top, plot_bottom)
+        xs = self._point_xs(plot_left, plot_right, padding=70)
+        panel_color = self.palette["chart_panel"]
+        average_color = self.palette["text"]
+        band_color = _blend(average_color, panel_color, BAND_OPACITY)
+        self._draw_spread_band(xs, lines[TREND_COLUMNS], y, band_color)
 
         for tick in np.arange(low, high + 1, SCALE_STEP):
             self.canvas.create_line(
@@ -286,13 +293,14 @@ class SignalTrendWindow(tk.Toplevel):
                 plot_left, y(0), plot_right, y(0), fill=self.palette["chart_text"], dash=(4, 3)
             )
 
-        xs = self._point_xs(plot_left, plot_right, padding=70)
+        # The average is the main line; the indicators stay faint behind it.
         legend_x = left + 10
         for name, column, color, _ in TREND_INDICATORS:
+            faint = _blend(color, panel_color, INDICATOR_LINE_OPACITY)
             ys = [None if pd.isna(value) else y(value) for value in lines[column]]
-            self._draw_points_line(xs, ys, color, width=1.6, radius=3, signal_colored=False)
-            legend_x = self._draw_legend_item(legend_x, top + 34, name, color, width=2)
-        average_color = self.palette["text"]
+            self._draw_points_line(xs, ys, faint, width=1.3, radius=2.5, signal_colored=False)
+            legend_x = self._draw_legend_item(legend_x, top + 34, name, faint, width=2)
+        legend_x = self._draw_legend_item(legend_x, top + 34, "최고~최저 범위", band_color, width=10)
         average_ys = [None if pd.isna(value) else y(value) for value in lines["평균"]]
         self._draw_points_line(xs, average_ys, average_color, width=4, radius=6, signal_colored=False)
         self._draw_legend_item(legend_x, top + 34, "평균", average_color, width=4)
@@ -304,6 +312,23 @@ class SignalTrendWindow(tk.Toplevel):
                 fill=average_color, font=(self.ui_font_family, 10, "bold"),
             )
         self._draw_signal_labels(xs, bottom - 8, with_dates=True)
+
+    def _draw_spread_band(self, xs: list[float], indicators: pd.DataFrame, y, color: str) -> None:
+        """Shade between the highest and lowest indicator at each signal.
+
+        The lines start together and drift apart, so the band widens like a
+        forecast cone and shows how much the indicators disagree.
+        """
+        upper = [
+            (x, y(value)) for x, value in zip(xs, indicators.max(axis=1)) if not pd.isna(value)
+        ]
+        lower = [
+            (x, y(value)) for x, value in zip(xs, indicators.min(axis=1)) if not pd.isna(value)
+        ]
+        if len(upper) < 2:
+            return
+        outline = [coordinate for point in upper + lower[::-1] for coordinate in point]
+        self.canvas.create_polygon(*outline, fill=color, outline="")
 
     def _draw_legend_item(self, x: float, y: float, name: str, color: str, width: int) -> float:
         self.canvas.create_line(x, y, x + 22, y, fill=color, width=width)
@@ -334,6 +359,15 @@ def _change_range(values) -> tuple[float, float]:
     return (
         float(np.floor(low / SCALE_STEP) * SCALE_STEP),
         float(np.ceil(high / SCALE_STEP) * SCALE_STEP),
+    )
+
+
+def _blend(color: str, background: str, opacity: float) -> str:
+    """``color`` at ``opacity`` over ``background``; a Tk canvas has no alpha."""
+    front = [int(color[index : index + 2], 16) for index in (1, 3, 5)]
+    back = [int(background[index : index + 2], 16) for index in (1, 3, 5)]
+    return "#" + "".join(
+        f"{round(f * opacity + b * (1 - opacity)):02x}" for f, b in zip(front, back)
     )
 
 
