@@ -9,6 +9,7 @@ from signal_trend import (
     range_positions,
     signal_points,
     time_fractions,
+    week_line_xs,
     trend_lines,
     weeks_between,
 )
@@ -111,3 +112,19 @@ def test_close_signals_keep_room_for_their_labels() -> None:
     assert fractions[0] == 0 and fractions[-1] == pytest.approx(1)
     assert fractions[1] == pytest.approx(0.2 / (0.2 + 38 / 39))
     assert time_fractions(dates[:1]) == [0.5]
+
+
+def test_every_week_between_signals_gets_a_line() -> None:
+    assert week_line_xs([0.0, 100.0, 140.0], [10, 4]) == pytest.approx(
+        [10, 20, 30, 40, 50, 60, 70, 80, 90, 110, 120, 130]
+    )
+    assert week_line_xs([0.0, 100.0], [1]) == []
+    assert week_line_xs([50.0], []) == []
+
+
+def test_crowded_weeks_are_thinned_out() -> None:
+    # 40 weeks in 100 pixels is 2.5 pixels a week; every third week is 7.5.
+    places = week_line_xs([0.0, 100.0], [40], min_spacing=6)
+
+    assert places[:3] == pytest.approx([7.5, 15.0, 22.5])
+    assert len(places) == 13

@@ -44,6 +44,7 @@ RANGE_LOOKBACK_WEEKS = 52
 SCALE_STEPS = (25, 10, 5, 2, 1)
 OSCILLATOR_GUIDES = (30.0, 70.0)
 MIN_POINT_GAP = 0.18
+WEEK_LINE_SPACING = 6.0
 RISE_COLOR = "#ef4444"
 FALL_COLOR = "#3b82f6"
 
@@ -132,6 +133,22 @@ def time_fractions(dates, min_gap: float = MIN_POINT_GAP) -> list[float]:
     shares = np.maximum(gaps / gaps.sum(), min(min_gap, 1 / gaps.size))
     shares = shares / shares.sum()
     return [0.0, *np.cumsum(shares).clip(0, 1).tolist()]
+
+
+def week_line_xs(xs: list[float], weeks: list[int], min_spacing: float = WEEK_LINE_SPACING) -> list[float]:
+    """Horizontal places of the weeks between the signals, signal weeks left out.
+
+    When the weeks of a stretch would be closer than ``min_spacing`` pixels,
+    only every second, third, ... week is kept.
+    """
+    places: list[float] = []
+    for count, start, end in zip(weeks, xs, xs[1:]):
+        if count < 2:
+            continue
+        width = (end - start) / count
+        stride = max(1, int(np.ceil(min_spacing / width))) if width > 0 else count
+        places += [start + week * width for week in range(stride, count, stride)]
+    return places
 
 
 class SignalTrendWindow(tk.Toplevel):
@@ -364,6 +381,15 @@ class SignalTrendWindow(tk.Toplevel):
             )
             self._text(left + 40, y(tick), _change_text(tick), "e", muted, size=8)
         self.canvas.create_line(left + 46, y(0), right - 100, y(0), fill=muted, dash=(4, 3))
+        # One vertical line per week, with the signal weeks in their own color.
+        for x in week_line_xs(xs, weeks_between(self.points["Date"])):
+            self.canvas.create_line(
+                x, plot_top - 18, x, plot_bottom + 8, fill=self.palette["chart_grid"]
+            )
+        for label, x in zip(self.points.index, xs):
+            self.canvas.create_line(
+                x, plot_top - 18, x, plot_bottom + 8, fill=SIGNAL_COLORS[label], dash=(2, 3)
+            )
 
         average_ys = [None if pd.isna(value) else y(value) for value in lines["평균"]]
         self._draw_points_line(xs, average_ys, average_color, width=4, radius=6, signal_colored=False)
