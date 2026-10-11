@@ -8,12 +8,14 @@ final place in the UI is decided.
 
 from __future__ import annotations
 
+import threading
 import tkinter as tk
 from tkinter import ttk
 
 import numpy as np
 import pandas as pd
 
+from market_context import SP500_NAME, SP500_TICKER, load_sp500_context
 from ui_theme import configure_ui_fonts, normalize_theme, theme_palette
 
 
@@ -41,6 +43,10 @@ BASELINE_COLUMNS = [
 ]
 POINT_COLUMNS = [*TREND_COLUMNS, *BASELINE_COLUMNS]
 RANGE_LOOKBACK_WEEKS = 52
+BENCHMARK_TICKER = SP500_TICKER
+BENCHMARK_NAME = SP500_NAME
+BENCHMARK_OPEN_TEXT = "S&P 500 비교 열기"
+BENCHMARK_CLOSE_TEXT = "S&P 500 비교 닫기"
 SCALE_STEPS = (25, 10, 5, 2, 1)
 OSCILLATOR_GUIDES = (30.0, 70.0)
 MIN_POINT_GAP = 0.18
@@ -51,11 +57,19 @@ FALL_COLOR = "#3b82f6"
 
 def signal_points(data: pd.DataFrame, cycle: pd.Series | None) -> pd.DataFrame:
     """Indicator values on each signal week of ``cycle``, one row per signal."""
+    if cycle is None:
+        return points_on_dates(data, {})
+    return points_on_dates(
+        data, {label: cycle.get(column) for label, column, _ in SIGNAL_POINTS}
+    )
+
+
+def points_on_dates(data: pd.DataFrame, dates: dict) -> pd.DataFrame:
+    """Indicator values of ``data`` on the week of each labelled date."""
     rows: dict[str, dict] = {}
-    if cycle is not None and not data.empty:
+    if not data.empty:
         index = pd.DatetimeIndex(data.index)
-        for label, column, _ in SIGNAL_POINTS:
-            value = cycle.get(column)
+        for label, value in dates.items():
             if value is None or pd.isna(value):
                 continue
             position = int(index.searchsorted(pd.Timestamp(value), side="left"))
@@ -152,20 +166,21 @@ def week_line_xs(xs: list[float], weeks: list[int], min_spacing: float = WEEK_LI
 
 
 class SignalTrendWindow(tk.Toplevel):
-    """Small panels with each indicator's signal points, and a combined panel."""
+    """Signal-point trend of one record, with the S&P 500 beside it on request."""
 
     def __init__(self, master: tk.Misc, theme_mode: str = "light") -> None:
         super().__init__(master)
         self.ui_font_family = configure_ui_fonts(self)
         self.theme_mode = normalize_theme(theme_mode)
-        self.palette = theme_palette(self.theme_mode)
-        self.configure(background=self.palette["window"])
+        self.configure(background=theme_palette(self.theme_mode)["window"])
         self.title("신호 지점 흐름 (임시)")
         self.geometry("1240x700")
         self.minsize(820, 560)
 
         self.status_var = tk.StringVar(value="")
-        header = ttk.Frame(self)
+        self.primary_frame = ttk.Frame(self)
+        self.primary_frame.pack(side="left", fill="both", expand=True)
+        header = self.header = ttk.Frame(self.primary_frame)
         header.pack(fill="x")
         ttk.Label(
             header,
@@ -173,15 +188,36 @@ class SignalTrendWindow(tk.Toplevel):
             font=(self.ui_font_family, 11, "bold"),
             padding=(10, 7, 10, 4),
         ).pack(side="left")
-
-        self.canvas = tk.Canvas(
-            self, background=self.palette["chart_background"], highlightthickness=0
+        self.benchmark_button = ttk.Button(
+            header, text=BENCHMARK_OPEN_TEXT, command=self._toggle_benchmark
         )
+        self.benchmark_button.pack(side="right", padx=(0, 10), pady=(5, 2))
+        self.canvas = TrendCanvas(self.primary_frame, self.ui_font_family, self.theme_mode)
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", lambda _event: self._redraw())
+
+        self.benchmark_frame = ttk.Frame(self)
+        # Same height as the stock's header, so the two charts line up.
+        self.benchmark_header = ttk.Frame(self.benchmark_frame)
+        self.benchmark_header.pack(fill="x")
+        self.benchmark_header.pack_propagate(False)
+        ttk.Label(
+            self.benchmark_header,
+            text=f"{BENCHMARK_NAME} ({BENCHMARK_TICKER})  |  같은 주의 값",
+            font=(self.ui_font_family, 11, "bold"),
+            padding=(10, 7, 10, 4),
+        ).pack(side="left")
+        self.benchmark_canvas = TrendCanvas(
+            self.benchmark_frame, self.ui_font_family, self.theme_mode
+        )
+        self.benchmark_canvas.pack(fill="both", expand=True)
 
         self.data = pd.DataFrame()
         self.points = signal_points(self.data, None)
+        self.benchmark_data = pd.DataFrame()
+        self.benchmark_visible = False
+        self.benchmark_loading = False
+        self.benchmark_error = ""
+        self._geometry_before_benchmark = ""
 
     def show(self, ticker: str, data: pd.DataFrame, cycle: pd.Series | None) -> None:
         self.data = data
@@ -191,17 +227,118 @@ class SignalTrendWindow(tk.Toplevel):
         )
         self.status_var.set(f"{ticker}  |  {dates or '신호 지점 없음'}")
         self.title(f"{ticker} · 신호 지점 흐름 (임시)")
-        self._redraw()
+        self.canvas.show(data, self.points)
+        self._show_benchmark_points()
 
     def set_theme(self, mode: str) -> None:
         self.theme_mode = normalize_theme(mode)
-        self.palette = theme_palette(self.theme_mode)
-        self.configure(background=self.palette["window"])
-        self.canvas.configure(background=self.palette["chart_background"])
+        self.configure(background=theme_palette(self.theme_mode)["window"])
+        self.canvas.set_theme(self.theme_mode)
+        self.benchmark_canvas.set_theme(self.theme_mode)
+
+    def _toggle_benchmark(self) -> None:
+        if self.benchmark_visible:
+            self.benchmark_visible = False
+            self.benchmark_frame.pack_forget()
+            self.benchmark_button.configure(text=BENCHMARK_OPEN_TEXT)
+            if self._geometry_before_benchmark and self.state() == "normal":
+                self.geometry(self._geometry_before_benchmark)
+            return
+
+        self.update_idletasks()
+        self.benchmark_visible = True
+        self._geometry_before_benchmark = self.geometry()
+        width, height = self.winfo_width(), self.winfo_height()
+        if self.state() == "normal":
+            # Double the window so the stock keeps its width, as far as the screen allows.
+            width = min(self.winfo_screenwidth(), width * 2)
+            x = max(0, min(self.winfo_x(), self.winfo_screenwidth() - width))
+            self.geometry(f"{width}x{height}+{x}+{self.winfo_y()}")
+        self.benchmark_header.configure(height=self.header.winfo_height())
+        self.benchmark_frame.configure(width=width // 2)
+        self.benchmark_frame.pack_propagate(False)
+        self.benchmark_frame.pack(side="right", fill="both")
+        self.benchmark_button.configure(text=BENCHMARK_CLOSE_TEXT)
+
+        if self.benchmark_data.empty and not self.benchmark_loading:
+            loaded = getattr(self.master, "benchmark_data", None)
+            if loaded is not None and not loaded.empty:
+                # The chart preview already has the series.
+                self.benchmark_data = loaded
+            else:
+                self.benchmark_loading = True
+                self.benchmark_error = ""
+                threading.Thread(target=self._load_benchmark_worker, daemon=True).start()
+        self._show_benchmark_points()
+
+    def _load_benchmark_worker(self) -> None:
+        try:
+            expected_latest = self.data.index[-1] if not self.data.empty else None
+            prepared, _ = load_sp500_context(expected_latest_date=expected_latest)
+            error = "" if not prepared.empty else "S&P 500 데이터가 비어 있습니다."
+        except Exception as exc:  # Network/provider errors are shown in the window.
+            prepared, error = pd.DataFrame(), str(exc)
+        try:
+            self.after(0, self._finish_benchmark_load, prepared, error)
+        except tk.TclError:
+            pass  # The window was closed while loading.
+
+    def _finish_benchmark_load(self, data: pd.DataFrame, error: str) -> None:
+        if not self.winfo_exists():
+            return
+        self.benchmark_loading = False
+        self.benchmark_error = error
+        if not error:
+            index = pd.DatetimeIndex(pd.to_datetime(data.index))
+            data = data.set_axis(index.tz_localize(None) if index.tz is not None else index)
+            self.benchmark_data = data[~data.index.duplicated(keep="last")].sort_index()
+        self._show_benchmark_points()
+
+    def _show_benchmark_points(self) -> None:
+        """Show the S&P 500 on the same weeks as the record's signals."""
+        if not self.benchmark_visible:
+            return
+        if self.benchmark_loading:
+            message = "S&P 500 주봉 데이터를 불러오는 중입니다..."
+        elif self.benchmark_error:
+            message = "S&P 500 데이터를 불러오지 못했습니다.\n" + self.benchmark_error
+        else:
+            message = ""
+        if message or self.benchmark_data.empty:
+            self.benchmark_canvas.show(pd.DataFrame(), signal_points(pd.DataFrame(), None), message)
+            return
+        points = points_on_dates(self.benchmark_data, self.points["Date"].to_dict())
+        self.benchmark_canvas.show(self.benchmark_data, points)
+
+
+class TrendCanvas(tk.Canvas):
+    """Six indicator panels and the combined average for one price series."""
+
+    def __init__(self, master: tk.Misc, font_family: str, theme_mode: str) -> None:
+        self.ui_font_family = font_family
+        self.theme_mode = theme_mode
+        self.palette = theme_palette(theme_mode)
+        super().__init__(
+            master, background=self.palette["chart_background"], highlightthickness=0
+        )
+        self.data = pd.DataFrame()
+        self.points = signal_points(self.data, None)
+        self.message = ""
+        self.bind("<Configure>", lambda _event: self._redraw())
+
+    def show(self, data: pd.DataFrame, points: pd.DataFrame, message: str = "") -> None:
+        """Draw ``points`` of ``data``; ``message`` replaces the empty-state text."""
+        self.data, self.points, self.message = data, points, message
+        self._redraw()
+
+    def set_theme(self, mode: str) -> None:
+        self.theme_mode = mode
+        self.palette = theme_palette(mode)
+        self.configure(background=self.palette["chart_background"])
         self._redraw()
 
     def _redraw(self) -> None:
-        canvas = self.canvas
+        canvas = self
         canvas.delete("all")
         width, height = canvas.winfo_width(), canvas.winfo_height()
         if width < 200 or height < 200:
@@ -210,7 +347,7 @@ class SignalTrendWindow(tk.Toplevel):
             canvas.create_text(
                 width / 2,
                 height / 2,
-                text="이 기록에는 신호 지점이 없습니다.",
+                text=self.message or "이 기록에는 신호 지점이 없습니다.",
                 fill=self.palette["chart_text"],
                 font=(self.ui_font_family, 11),
             )
@@ -235,11 +372,11 @@ class SignalTrendWindow(tk.Toplevel):
     def _text(self, x: float, y: float, text: str, anchor: str, color: str, size: int = 9,
               bold: bool = False) -> int:
         font = (self.ui_font_family, size, "bold") if bold else (self.ui_font_family, size)
-        return self.canvas.create_text(x, y, text=text, anchor=anchor, fill=color, font=font)
+        return self.create_text(x, y, text=text, anchor=anchor, fill=color, font=font)
 
     def _draw_frame(self, box: tuple[float, float, float, float], title: str, color: str) -> None:
         left, top, right, bottom = box
-        self.canvas.create_rectangle(
+        self.create_rectangle(
             left, top, right, bottom,
             outline=self.palette["chart_border"],
             fill=self.palette["chart_panel"],
@@ -261,12 +398,12 @@ class SignalTrendWindow(tk.Toplevel):
         for (x1, y1), (x2, y2) in zip(drawn, drawn[1:]):
             # Canvas y grows downward, so a smaller y is a higher value.
             segment = RISE_COLOR if y2 < y1 else FALL_COLOR if y2 > y1 else color
-            self.canvas.create_line(x1, y1, x2, y2, fill=segment, width=width)
+            self.create_line(x1, y1, x2, y2, fill=segment, width=width)
         for label, x, y in zip(self.points.index, xs, ys):
             if y is None:
                 continue
             fill = SIGNAL_COLORS[label] if signal_colored else color
-            self.canvas.create_oval(
+            self.create_oval(
                 x - radius, y - radius, x + radius, y + radius, fill=fill, outline=fill
             )
 
@@ -304,19 +441,19 @@ class SignalTrendWindow(tk.Toplevel):
         finite_baseline = [value for value in baseline_values if np.isfinite(value)]
         low, high = min([low, *finite_baseline]), max([high, *finite_baseline])
         plot_left, plot_right = left + 30, right - 52
-        plot_top, plot_bottom = top + 48, bottom - 48
+        plot_top, plot_bottom = top + 62, bottom - 48
         y = lambda value: _map(value, low, high, plot_top, plot_bottom)
 
         # The scale's top and bottom, so the reader sees what the panel spans.
         for value, edge_y in ((high, plot_top), (low, plot_bottom)):
-            self.canvas.create_line(
+            self.create_line(
                 left + 8, edge_y, right - 8, edge_y, fill=self.palette["chart_grid"]
             )
             edge_text = f"{value:.0f}" if fixed_scale else _value_text(value, compact)
             self._text(right - 8, edge_y - 2, edge_text, "se", muted, size=8)
         if fixed_scale:
             for guide in OSCILLATOR_GUIDES:
-                self.canvas.create_line(
+                self.create_line(
                     left + 8, y(guide), right - 8, y(guide),
                     fill=self.palette["chart_grid"], dash=(2, 4),
                 )
@@ -325,7 +462,8 @@ class SignalTrendWindow(tk.Toplevel):
         if baseline_name:
             # Named up here: inside the plot the name would sit on the points.
             note += f" · 점선 {baseline_name}"
-        self._text(right - 8, top + 7, note, "ne", muted, size=8)
+        # Under the title: beside it the two overlap in a narrow panel.
+        self._text(left + 8, top + 24, note, "nw", muted, size=8)
 
         values = self.points[column].astype(float).tolist()
         xs = self._point_xs(plot_left, plot_right)
@@ -351,7 +489,7 @@ class SignalTrendWindow(tk.Toplevel):
         if not drawn:
             return
         path = [(left, drawn[0][1]), *drawn, (right, drawn[-1][1])]
-        self.canvas.create_line(
+        self.create_line(
             *[coordinate for point in path for coordinate in point],
             fill=BASELINE_COLORS[self.theme_mode], dash=(6, 4), width=2,
         )
@@ -376,14 +514,14 @@ class SignalTrendWindow(tk.Toplevel):
 
         step = _scale_step(low, high)
         for tick in np.arange(np.ceil(low / step) * step, high + 0.01, step):
-            self.canvas.create_line(
+            self.create_line(
                 left + 46, y(tick), right - 100, y(tick), fill=self.palette["chart_grid"]
             )
             self._text(left + 40, y(tick), _change_text(tick), "e", muted, size=8)
-        self.canvas.create_line(left + 46, y(0), right - 100, y(0), fill=muted, dash=(4, 3))
+        self.create_line(left + 46, y(0), right - 100, y(0), fill=muted, dash=(4, 3))
         # One vertical line per week, signal weeks included.
         for x in [*xs, *week_line_xs(xs, weeks_between(self.points["Date"]))]:
-            self.canvas.create_line(
+            self.create_line(
                 x, plot_top - 18, x, plot_bottom + 8, fill=self.palette["chart_grid"]
             )
 

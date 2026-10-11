@@ -6,6 +6,7 @@ import pytest
 from signal_trend import (
     POINT_COLUMNS,
     change_from_first,
+    points_on_dates,
     range_positions,
     signal_points,
     time_fractions,
@@ -128,3 +129,15 @@ def test_crowded_weeks_are_thinned_out() -> None:
 
     assert places[:3] == pytest.approx([7.5, 15.0, 22.5])
     assert len(places) == 13
+
+
+def test_benchmark_is_read_on_the_same_weeks_as_the_signals() -> None:
+    data = weekly_data()
+    benchmark = weekly_data() * 10
+    points = signal_points(data, cycle(data, 55, 57, None))
+
+    benchmark_points = points_on_dates(benchmark, points["Date"].to_dict())
+
+    assert list(benchmark_points.index) == ["1차", "2차"]
+    assert list(benchmark_points["Date"]) == list(points["Date"])
+    assert list(benchmark_points["Close"]) == [1550.0, 1570.0]
