@@ -117,6 +117,7 @@ PRICE_RANGE_MA_MARGIN = 0.25
 PRICE_SCALE_TICKS = 5
 MIN_TEXT_CONTRAST = 3.5
 SIGNAL_LABEL_MIN_GAP = 30
+SECOND_ROW_BUTTON_Y = 42
 CANDLE_BODY_FILL = ""
 INDICATOR_BAR_WIDTH_RATIO = 0.84
 ZOOM_IN_FACTOR = 0.88
@@ -281,11 +282,13 @@ class ChartPreviewWindow(tk.Toplevel):
             self.header_frame,
             textvariable=self.status_var,
             font=(self.ui_font_family, 11, "bold"),
-            padding=(10, 7, 620, 2),
+            padding=(10, 7, 485, 2),
         ).pack(side="left", fill="x", expand=True)
-        # Temporary entry point for the experimental signal trend view.
+        # Temporary entry point for the experimental signal trend view.  It sits
+        # under the S&P 500 button, beside the two summary lines, so it does not
+        # take room from the header text.
         self.signal_trend_button = ttk.Button(
-            self.header_frame,
+            self,
             text="신호 흐름 (임시)",
             command=self._open_signal_trend,
         )
@@ -326,6 +329,7 @@ class ChartPreviewWindow(tk.Toplevel):
             textvariable=self.hover_var,
             padding=(10, 2, 10, 7),
         ).pack(fill="x")
+        self.signal_trend_button.lift()
 
         self.chart_area = ttk.Frame(self)
         self.chart_area.pack(fill="both", expand=True)
@@ -399,13 +403,15 @@ class ChartPreviewWindow(tk.Toplevel):
 
     def _position_header_controls(self, fixed_right: int | None = None) -> None:
         relx = 1.0 if fixed_right is None else 0.0
-        right = -10 if fixed_right is None else max(625, int(fixed_right) - 10)
+        right = -10 if fixed_right is None else max(490, int(fixed_right) - 10)
         common = {"relx": relx, "y": 6, "anchor": "ne"}
         self.benchmark_button.place_configure(x=right, **common)
         self.next_button.place_configure(x=right - 165, **common)
         self.navigation_label.place_configure(x=right - 250, y=10, anchor="ne", relx=relx)
         self.previous_button.place_configure(x=right - 330, **common)
-        self.signal_trend_button.place_configure(x=right - 425, **common)
+        self.signal_trend_button.place_configure(
+            x=right, y=SECOND_ROW_BUTTON_Y, anchor="ne", relx=relx
+        )
 
     def _open_signal_trend(self) -> None:
         from signal_trend import SignalTrendWindow
